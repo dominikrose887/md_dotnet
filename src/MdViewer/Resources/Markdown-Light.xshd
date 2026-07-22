@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<SyntaxDefinition name="Markdown" extensions=".md;.markdown" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+  <!-- Pastel light markdown tokens. Escape \# (IgnorePatternWhitespace). -->
+  <Color name="Heading" foreground="#7D92B8" fontWeight="bold" />
+  <Color name="Emphasis" foreground="#C4A0A8" fontStyle="italic" />
+  <Color name="Strong" foreground="#B8929A" fontWeight="bold" />
+  <Color name="Code" foreground="#A89070" />
+  <Color name="Link" foreground="#9A8FBF" />
+  <Color name="Quote" foreground="#9A93A8" />
+  <Color name="List" foreground="#8B9DC3" />
+  <Color name="Hr" foreground="#B8B0C4" />
+
+  <RuleSet ignoreCase="false">
+    <Rule color="Heading">^\#{1,6}\s+\S.*</Rule>
+    <Rule color="Quote">^&gt;\s*\S.*</Rule>
+    <Rule color="Hr">^(-{3,}|\*{3,}|_{3,})\s*$</Rule>
+    <Rule color="List">^\s*([-*+]|\d+\.)\s+\S</Rule>
+    <Rule color="Code">`[^`\r\n]+`</Rule>
+    <Rule color="Link">!\[[^\]]*\]\([^)]+\)</Rule>
+    <Rule color="Link">\[[^\]]+\]\([^)]+\)</Rule>
+    <Rule color="Strong">\*\*[^*\r\n]+\*\*</Rule>
+    <Rule color="Strong">__[^_\r\n]+__</Rule>
+    <Rule color="Emphasis">\*[^*\r\n]+\*</Rule>
+    <Rule color="Emphasis">_[^_\r\n]+_</Rule>
+  </RuleSet>
+</SyntaxDefinition>
