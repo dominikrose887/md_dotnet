@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>MdViewer-Cleanup</AssemblyName>
+    <RootNamespace>MdViewer.Cleanup</RootNamespace>
+    <Version>1.1.0</Version>
+    <Product>MdViewer Cleanup</Product>
+    <Description>Full uninstall/cleanup tool for MdViewer</Description>
+  </PropertyGroup>
+
+</Project>

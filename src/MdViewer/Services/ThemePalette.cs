@@ -171,7 +171,8 @@ public static class ThemePalette
                     table { border-collapse: collapse; width: 100%; margin: 1.2em 0; }
                     th, td { border: 1px solid var(--md-border); padding: 10px 12px; text-align: left; }
                     th { background: var(--md-th-bg); font-weight: 600; color: var(--md-heading); }
-                    img { max-width: 100%; border-radius: 8px; }
+                    img { max-width: 100%; height: auto; border-radius: 8px; display: inline-block; }
+                    img[alt]:not([src]), img[src=""] { color: var(--md-quote); font-style: italic; }
                     hr { border: none; border-top: 1px solid var(--md-border); margin: 2em 0; }
                     ul, ol { padding-left: 1.4em; }
                     li + li { margin-top: 0.25em; }

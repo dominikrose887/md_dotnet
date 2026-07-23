@@ -10,6 +10,7 @@ using System.Windows.Threading;
 using MdViewer.Models;
 using MdViewer.Services;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.Wpf;
 using Microsoft.Win32;
 
 namespace MdViewer;
@@ -22,7 +23,9 @@ public partial class MainWindow : Window
     private bool _isDirty;
     private bool _webViewReady;
     private bool _previewShellReady;
+    private string? _previewMappedRoot;
     private bool _suppressTreeSelection;
+    private const string PreviewVirtualHost = "mdviewer.assets";
     private bool _findBarOpen;
     private ViewMode _viewMode = ViewMode.Split;
     private FindReplaceService? _findReplace;
@@ -43,6 +46,17 @@ public partial class MainWindow : Window
         {
             InitializeComponent();
             AppLogger.Info("InitializeComponent done");
+
+            // WebView2 must write cache outside Program Files (installed builds).
+            var webViewUserData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MdViewer",
+                "WebView2");
+            Directory.CreateDirectory(webViewUserData);
+            PreviewWebView.CreationProperties = new CoreWebView2CreationProperties
+            {
+                UserDataFolder = webViewUserData
+            };
 
             _settings = AppSettings.Load();
             AppLogger.Info($"Settings loaded (dark={_settings.IsDarkTheme}, sidebar={_settings.IsSidebarVisible}, lastFolder={_settings.LastFolder ?? "(none)"})");
@@ -98,23 +112,28 @@ public partial class MainWindow : Window
             CommandBindings.Add(new CommandBinding(formatCommand, (_, _) => FormatDocument()));
             InputBindings.Add(new KeyBinding(formatCommand, Key.F, ModifierKeys.Control | ModifierKeys.Shift));
 
+            var closeTabCommand = new RoutedUICommand("Close Tab", "CloseTab", typeof(MainWindow));
+            CommandBindings.Add(new CommandBinding(closeTabCommand, (_, _) =>
+            {
+                if (_activeTab is not null) CloseTab(_activeTab);
+            }));
+            InputBindings.Add(new KeyBinding(closeTabCommand, Key.W, ModifierKeys.Control));
+
             AppLogger.Info("Applying theme");
             ApplyTheme(_settings.IsDarkTheme);
-            SetSidebarVisible(_settings.IsSidebarVisible);
+            // Workspace is closed by default; only open when the user opens a folder.
+            _folderPath = null;
+            SetSidebarVisible(false);
             _focusMode.IsEnabled = _settings.IsFocusMode;
             _typewriterMode.IsEnabled = _settings.IsTypewriterMode;
             ToolbarFocusButton.IsChecked = _settings.IsFocusMode;
             ToolbarTypewriterButton.IsChecked = _settings.IsTypewriterMode;
+            InitializeTabs();
             UpdateTitle();
             UpdateStats();
             SetViewMode(ViewMode.Split);
             RebuildCodeBlockHighlighting();
-
-            if (!string.IsNullOrEmpty(_settings.LastFolder) && Directory.Exists(_settings.LastFolder))
-            {
-                AppLogger.Info($"Restoring last folder: {_settings.LastFolder}");
-                OpenFolderPath(_settings.LastFolder, selectFirstFile: false);
-            }
+            RefreshFileTree();
 
             AppLogger.Info("MainWindow constructor complete");
         }
@@ -133,7 +152,7 @@ public partial class MainWindow : Window
     public void OpenFileFromPath(string path)
     {
         if (!File.Exists(path)) return;
-        LoadFile(path, confirmDiscard: true, adoptWorkspaceIfEmpty: true);
+        OpenOrFocusFile(path);
     }
 
     public void OpenFolderFromPath(string path)
@@ -160,21 +179,36 @@ public partial class MainWindow : Window
         AppLogger.Info("MainWindow Loaded — initializing WebView2");
         try
         {
-            await PreviewWebView.EnsureCoreWebView2Async();
+            var userData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MdViewer",
+                "WebView2");
+            Directory.CreateDirectory(userData);
+
+            var env = await CoreWebView2Environment.CreateAsync(userDataFolder: userData);
+            await PreviewWebView.EnsureCoreWebView2Async(env);
             PreviewWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             PreviewWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            PreviewWebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             PreviewWebView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
             PreviewWebView.CoreWebView2.ProcessFailed += (_, args) =>
                 AppLogger.Error($"WebView2 process failed: {args.ProcessFailedKind}");
             PreviewWebView.NavigationCompleted += PreviewWebView_NavigationCompleted;
             _webViewReady = true;
-            AppLogger.Info("WebView2 ready");
-            await UpdatePreviewAsync();
+            AppLogger.Info($"WebView2 ready (userData={userData})");
+            await UpdatePreviewAsync(forceNavigate: true);
         }
         catch (Exception ex)
         {
             AppLogger.Error("WebView2 initialization failed", ex);
             StatusText.Text = $"Preview unavailable: {ex.Message}";
+            MessageBox.Show(
+                "The preview pane could not start (WebView2).\n\n" +
+                "Install the Microsoft Edge WebView2 Runtime, then restart MdViewer.\n\n" +
+                $"Details:\n{ex.Message}\n\nLog:\n{AppLogger.CurrentLogPath}",
+                "Preview unavailable",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
     }
 
@@ -226,7 +260,20 @@ public partial class MainWindow : Window
 
     private void Editor_TextChanged(object? sender, EventArgs e)
     {
-        _isDirty = Editor.Text != _savedContent;
+        if (_suppressTabEditorSync) return;
+
+        if (_activeTab is not null)
+        {
+            _activeTab.Content = Editor.Text;
+            _savedContent = _activeTab.SavedContent;
+            _isDirty = _activeTab.IsDirty;
+            _activeTab.NotifyTitleChanged();
+        }
+        else
+        {
+            _isDirty = Editor.Text != _savedContent;
+        }
+
         UpdateTitle();
         _previewTimer.Stop();
         _previewTimer.Start();
@@ -268,11 +315,25 @@ public partial class MainWindow : Window
         try
         {
             var dark = _settings.IsDarkTheme;
+            var previewRoot = ResolvePreviewRoot();
+            var baseHref = previewRoot is null ? null : $"https://{PreviewVirtualHost}/";
+            ApplyPreviewResourceMapping(previewRoot);
+
+            if (!forceNavigate &&
+                !string.Equals(previewRoot, _previewMappedRoot, StringComparison.OrdinalIgnoreCase) &&
+                _previewShellReady)
+            {
+                // Document folder changed — reload shell so <base>/mapping stay in sync.
+                forceNavigate = true;
+            }
+
+            _previewMappedRoot = previewRoot;
             var bodyHtml = MarkdownService.ConvertToHtml(Editor.Text, dark);
 
             if (!forceNavigate && _previewShellReady && PreviewWebView.CoreWebView2 is not null)
             {
                 var payload = JsonSerializer.Serialize(bodyHtml);
+                var basePayload = JsonSerializer.Serialize(baseHref);
                 var darkJs = dark ? "true" : "false";
                 var script = $$"""
                     (function(){
@@ -281,6 +342,7 @@ public partial class MainWindow : Window
                       if (!root) return 'missing';
                       var y = window.scrollY;
                       if (window.__mdSetTheme) window.__mdSetTheme({{darkJs}});
+                      if (window.__mdSetBaseHref) window.__mdSetBaseHref({{basePayload}});
                       root.innerHTML = {{payload}};
                       if (window.__mdRender) window.__mdRender();
                       window.scrollTo({ top: y, left: 0, behavior: 'instant' });
@@ -297,7 +359,7 @@ public partial class MainWindow : Window
             }
 
             _scrollSync.BeginReload();
-            PreviewWebView.NavigateToString(MarkdownService.ToPreviewHtml(Editor.Text, dark));
+            PreviewWebView.NavigateToString(MarkdownService.ToPreviewHtml(Editor.Text, dark, baseHref));
         }
         catch (Exception ex)
         {
@@ -305,12 +367,51 @@ public partial class MainWindow : Window
         }
     }
 
+    private string? ResolvePreviewRoot()
+    {
+        if (!string.IsNullOrEmpty(_currentFilePath))
+        {
+            var dir = Path.GetDirectoryName(_currentFilePath);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                return Path.GetFullPath(dir);
+        }
+
+        if (!string.IsNullOrEmpty(_folderPath) && Directory.Exists(_folderPath))
+            return Path.GetFullPath(_folderPath);
+
+        return null;
+    }
+
+    private void ApplyPreviewResourceMapping(string? rootFolder)
+    {
+        var core = PreviewWebView.CoreWebView2;
+        if (core is null) return;
+
+        try
+        {
+            core.ClearVirtualHostNameToFolderMapping(PreviewVirtualHost);
+        }
+        catch
+        {
+            // Ignore if mapping did not exist yet
+        }
+
+        if (string.IsNullOrEmpty(rootFolder) || !Directory.Exists(rootFolder))
+            return;
+
+        core.SetVirtualHostNameToFolderMapping(
+            PreviewVirtualHost,
+            rootFolder,
+            CoreWebView2HostResourceAccessKind.Allow);
+
+        AppLogger.Debug($"Preview resource root mapped: {rootFolder} -> https://{PreviewVirtualHost}/");
+    }
+
     private void UpdateTitle()
     {
-        var name = _currentFilePath is not null
-            ? Path.GetFileName(_currentFilePath)
-            : "Untitled";
-        var dirty = _isDirty ? " *" : "";
+        var name = _activeTab?.Title
+                   ?? (_currentFilePath is not null ? Path.GetFileName(_currentFilePath) : "Untitled");
+        var dirty = (_activeTab?.IsDirty ?? _isDirty) ? " *" : "";
         Title = $"{name}{dirty} - MdViewer";
     }
 
@@ -707,7 +808,7 @@ public partial class MainWindow : Window
                 {
                     Header = Path.GetFileName(file),
                     Tag = file,
-                    IsSelected = string.Equals(file, _currentFilePath, StringComparison.OrdinalIgnoreCase)
+                    IsSelected = string.Equals(file, _activeTab?.FilePath ?? _currentFilePath, StringComparison.OrdinalIgnoreCase)
                 });
             }
         }
@@ -749,24 +850,19 @@ public partial class MainWindow : Window
         if (!File.Exists(path)) return;
         if (string.Equals(path, _currentFilePath, StringComparison.OrdinalIgnoreCase)) return;
 
-        if (!ConfirmDiscardChanges())
-        {
-            RefreshFileTree();
-            return;
-        }
-
-        LoadFile(path, confirmDiscard: false, adoptWorkspaceIfEmpty: false);
+        OpenOrFocusFile(path);
     }
 
     private void FileTree_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (FileTree.SelectedItem is TreeViewItem { Tag: string path } && File.Exists(path))
-            LoadFile(path, confirmDiscard: true, adoptWorkspaceIfEmpty: false);
+            OpenOrFocusFile(path);
     }
 
     private bool ConfirmDiscardChanges()
     {
-        if (!_isDirty) return true;
+        PersistActiveTabFromEditor();
+        if (!(_activeTab?.IsDirty ?? _isDirty)) return true;
 
         var result = MessageBox.Show(
             "You have unsaved changes. Do you want to save before continuing?",
@@ -782,35 +878,23 @@ public partial class MainWindow : Window
         };
     }
 
-    private void NewFile()
-    {
-        if (!ConfirmDiscardChanges()) return;
-
-        _currentFilePath = null;
-        _savedContent = string.Empty;
-        Editor.Text = string.Empty;
-        _isDirty = false;
-        UpdateTitle();
-        StatusText.Text = "New document";
-        RefreshFileTree();
-        _ = UpdatePreviewAsync();
-    }
+    private void NewFile() => NewTab();
 
     private void OpenFile()
     {
-        if (!ConfirmDiscardChanges()) return;
-
         var dialog = new OpenFileDialog
         {
             Filter = "Markdown files (*.md;*.markdown)|*.md;*.markdown|All files (*.*)|*.*",
-            Title = "Open Markdown File"
+            Title = "Open Markdown File",
+            Multiselect = true
         };
 
         if (!string.IsNullOrEmpty(_folderPath) && Directory.Exists(_folderPath))
             dialog.InitialDirectory = _folderPath;
 
         if (dialog.ShowDialog() != true) return;
-        LoadFile(dialog.FileName, confirmDiscard: false, adoptWorkspaceIfEmpty: true);
+        foreach (var file in dialog.FileNames)
+            OpenOrFocusFile(file);
     }
 
     private void OpenFolder()
@@ -845,8 +929,7 @@ public partial class MainWindow : Window
         }
 
         AppLogger.Info($"Selecting first markdown file: {firstFile}");
-        if (!ConfirmDiscardChanges()) return;
-        LoadFile(firstFile, confirmDiscard: false, adoptWorkspaceIfEmpty: false);
+        OpenOrFocusFile(firstFile);
     }
 
     private void SetWorkspace(string path)
@@ -862,6 +945,7 @@ public partial class MainWindow : Window
     private void CloseWorkspace()
     {
         _folderPath = null;
+        SetSidebarVisible(false);
         RefreshFileTree();
         StatusText.Text = "Workspace closed";
         AppLogger.Info("Workspace closed");
@@ -889,45 +973,16 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void LoadFile(string path, bool confirmDiscard = true, bool adoptWorkspaceIfEmpty = false)
+    private void LoadFile(string path, bool confirmDiscard = true)
     {
-        AppLogger.Info($"LoadFile path={path}, confirmDiscard={confirmDiscard}, adoptWorkspaceIfEmpty={adoptWorkspaceIfEmpty}");
-        if (confirmDiscard && !ConfirmDiscardChanges()) return;
-
-        try
-        {
-            var content = File.ReadAllText(path, Encoding.UTF8);
-            _currentFilePath = Path.GetFullPath(path);
-
-            // Opening a file must not steal an existing workspace.
-            if (adoptWorkspaceIfEmpty && string.IsNullOrEmpty(_folderPath))
-            {
-                var parent = Path.GetDirectoryName(_currentFilePath);
-                if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
-                    SetWorkspace(parent);
-            }
-
-            _savedContent = content;
-            Editor.Text = content;
-            _isDirty = false;
-
-            _settings.AddRecentFile(_currentFilePath);
-            _settings.Save();
-            RefreshFileTree();
-            UpdateTitle();
-            StatusText.Text = _currentFilePath;
-            AppLogger.Info($"LoadFile success ({content.Length} chars)");
-            _ = UpdatePreviewAsync();
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error($"LoadFile failed: {path}", ex);
-            MessageBox.Show($"Could not open file:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        // Kept for compatibility; tabs are the source of truth.
+        _ = confirmDiscard;
+        OpenOrFocusFile(path);
     }
 
     private bool SaveFile()
     {
+        PersistActiveTabFromEditor();
         if (_currentFilePath is null) return SaveAsFile();
 
         try
@@ -935,6 +990,13 @@ public partial class MainWindow : Window
             File.WriteAllText(_currentFilePath, Editor.Text, Encoding.UTF8);
             _savedContent = Editor.Text;
             _isDirty = false;
+            if (_activeTab is not null)
+            {
+                _activeTab.FilePath = _currentFilePath;
+                _activeTab.Content = Editor.Text;
+                _activeTab.MarkSaved();
+            }
+
             UpdateTitle();
             StatusText.Text = $"Saved: {_currentFilePath}";
             RefreshFileTree();
@@ -966,19 +1028,13 @@ public partial class MainWindow : Window
         var saved = SaveFile();
         if (saved)
         {
+            if (_activeTab is not null)
+                _activeTab.FilePath = _currentFilePath;
+
             _settings.AddRecentFile(_currentFilePath);
-            // Don't replace an existing workspace when saving elsewhere.
-            if (string.IsNullOrEmpty(_folderPath))
-            {
-                var parent = Path.GetDirectoryName(_currentFilePath);
-                if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
-                    SetWorkspace(parent);
-            }
-            else
-            {
-                _settings.Save();
-                RefreshFileTree();
-            }
+            _settings.Save();
+            RefreshFileTree();
+            UpdateTitle();
         }
 
         return saved;
@@ -1000,6 +1056,7 @@ public partial class MainWindow : Window
         {
             var title = Path.GetFileNameWithoutExtension(dialog.FileName);
             var html = MarkdownService.ToExportHtml(Editor.Text, title, _settings.IsDarkTheme);
+            html = ExportImageService.EmbedLocalImages(html, ResolvePreviewRoot());
             await File.WriteAllTextAsync(dialog.FileName, html, Encoding.UTF8);
             StatusText.Text = $"Exported: {dialog.FileName}";
         }
@@ -1031,13 +1088,29 @@ public partial class MainWindow : Window
         try
         {
             var title = Path.GetFileNameWithoutExtension(dialog.FileName);
-            var html = MarkdownService.ToExportHtml(Editor.Text, title, darkTheme: false);
+            var previewRoot = ResolvePreviewRoot();
+            var baseHref = previewRoot is null ? null : $"https://{PreviewVirtualHost}/";
+            ApplyPreviewResourceMapping(previewRoot);
+
+            var html = MarkdownService.ToExportHtml(Editor.Text, title, darkTheme: false, baseHref: baseHref);
             _previewShellReady = false;
             _scrollSync.BeginReload();
+
+            var navigationDone = new TaskCompletionSource<bool>();
+            void OnNavigated(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+            {
+                PreviewWebView.NavigationCompleted -= OnNavigated;
+                navigationDone.TrySetResult(e.IsSuccess);
+            }
+
+            PreviewWebView.NavigationCompleted += OnNavigated;
             PreviewWebView.NavigateToString(html);
 
-            await Task.Delay(500);
+            var ok = await navigationDone.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            if (!ok)
+                throw new InvalidOperationException("Preview navigation failed while preparing PDF.");
 
+            await WaitForPreviewImagesAsync();
             await PreviewWebView.CoreWebView2.PrintToPdfAsync(dialog.FileName);
             StatusText.Text = $"Exported: {dialog.FileName}";
 
@@ -1047,7 +1120,35 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show($"Could not export PDF:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (_viewMode != ViewMode.Editor)
+                _ = UpdatePreviewAsync(forceNavigate: true);
         }
+    }
+
+    private async Task WaitForPreviewImagesAsync(int timeoutMs = 12000)
+    {
+        if (PreviewWebView.CoreWebView2 is null) return;
+
+        var started = Environment.TickCount64;
+        while (Environment.TickCount64 - started < timeoutMs)
+        {
+            var result = await PreviewWebView.ExecuteScriptAsync(
+                """
+                (function () {
+                  var imgs = Array.prototype.slice.call(document.images || []);
+                  if (imgs.length === 0) return 'ready';
+                  var pending = imgs.filter(function (img) { return !img.complete; }).length;
+                  return pending === 0 ? 'ready' : ('wait:' + pending);
+                })();
+                """);
+
+            if (result.Contains("ready", StringComparison.Ordinal))
+                return;
+
+            await Task.Delay(120);
+        }
+
+        AppLogger.Warn("Timed out waiting for preview images before PDF export");
     }
 
     private string GetDefaultExportName(string extension)
@@ -1321,7 +1422,7 @@ public partial class MainWindow : Window
     private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
         AppLogger.Info("Window_Closing");
-        if (!ConfirmDiscardChanges())
+        if (!ConfirmDiscardAllTabs())
         {
             AppLogger.Info("Window close cancelled (unsaved changes)");
             e.Cancel = true;

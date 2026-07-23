@@ -16,7 +16,7 @@ public sealed class AppSettings
     };
 
     public bool IsDarkTheme { get; set; }
-    public bool IsSidebarVisible { get; set; } = true;
+    public bool IsSidebarVisible { get; set; }
     public bool IsFocusMode { get; set; }
     public bool IsTypewriterMode { get; set; }
     public string? LastFolder { get; set; }

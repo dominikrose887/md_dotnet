@@ -10,11 +10,12 @@ public static class KeyboardShortcutsCatalog
     [
         new("File",
         [
-            new("Ctrl+N", "New document"),
-            new("Ctrl+O", "Open file"),
+            new("Ctrl+N", "New tab"),
+            new("Ctrl+O", "Open file(s) in tabs"),
             new("Ctrl+Shift+O", "Open folder / workspace"),
             new("Ctrl+S", "Save"),
             new("Ctrl+Shift+S", "Save as"),
+            new("Ctrl+W", "Close active tab"),
         ]),
         new("Edit",
         [

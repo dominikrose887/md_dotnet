@@ -32,12 +32,12 @@ public sealed class CodeBlockHighlightingTransformer : DocumentColorizingTransfo
         if (dark)
         {
             _fenceBrush = Hex("#8E879C");
-            _keywordBrush = Hex("#D4B0B8");
-            _stringBrush = Hex("#B0C4D8");
+            _keywordBrush = Hex("#C9B0C0");
+            _stringBrush = Hex("#B8C8D8");
             _commentBrush = Hex("#7A7488");
             _numberBrush = Hex("#A8B4D4");
-            _typeBrush = Hex("#D4C0A0");
-            _annotationBrush = Hex("#E0C8A8");
+            _typeBrush = Hex("#C8B898");
+            _annotationBrush = Hex("#D4C0A0");
             _plainBrush = Hex("#C5C0D0");
         }
         else
@@ -122,8 +122,9 @@ public sealed class CodeBlockHighlightingTransformer : DocumentColorizingTransfo
         var codeText = document.GetText(codeStart, codeLength);
         _spans.Add(new ColoredSpan(codeStart, codeStart + codeLength, _plainBrush));
 
-        _ = TryHighlightWithAvalonEdit(codeText, block.Language, codeStart)
-            || TryHighlightWithHeuristics(codeText, block.Language, codeStart);
+        // Prefer pastel heuristics — AvalonEdit built-in colors are harsh / low-contrast on dark.
+        if (!TryHighlightWithHeuristics(codeText, block.Language, codeStart))
+            TryHighlightWithAvalonEdit(codeText, block.Language, codeStart);
 
         ApplyAnnotations(codeText, block.Language, codeStart);
     }
@@ -144,8 +145,8 @@ public sealed class CodeBlockHighlightingTransformer : DocumentColorizingTransfo
                 var highlighted = highlighter.HighlightLine(lineNumber);
                 foreach (var section in highlighted.Sections)
                 {
-                    var brush = MapAvalonColor(section.Color) ?? ExtractBrush(section.Color);
-                    if (brush is null) continue;
+                    // Never use AvalonEdit's raw brushes (harsh greens / near-invisible blues).
+                    var brush = MapAvalonColor(section.Color) ?? _plainBrush;
 
                     var start = absoluteStart + section.Offset;
                     var end = start + section.Length;
@@ -168,12 +169,19 @@ public sealed class CodeBlockHighlightingTransformer : DocumentColorizingTransfo
     {
         var key = LanguageProfiles.Normalize(language);
         var keywords = LanguageProfiles.GetKeywords(key);
-        if (keywords.Count == 0 && key is not ("json" or "xml" or "html" or "css" or "sql" or "bash" or "docker" or "yaml" or "properties"))
+        if (keywords.Count == 0 && key is not ("json" or "xml" or "html" or "xaml" or "svg" or "css" or "sql" or "bash" or "docker" or "yaml" or "properties"))
             return false;
 
         ApplyRegex(codeText, absoluteStart, @"//.*?$|/\*.*?\*/|#.*?$|<!--.*?-->", _commentBrush, RegexOptions.Singleline | RegexOptions.Multiline);
         ApplyRegex(codeText, absoluteStart, @"(""(?:\\.|[^""\\])*""|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)", _stringBrush);
         ApplyRegex(codeText, absoluteStart, @"\b\d+(\.\d+)?\b", _numberBrush);
+
+        // XML/HTML tags and attributes
+        if (key is "xml" or "html" or "xaml" or "svg")
+        {
+            ApplyRegex(codeText, absoluteStart, @"</?[A-Za-z_][\w:.-]*", _keywordBrush);
+            ApplyRegex(codeText, absoluteStart, @"\b[A-Za-z_][\w:.-]*(?=\s*=)", _typeBrush);
+        }
 
         if (keywords.Count > 0)
         {
@@ -256,19 +264,6 @@ public sealed class CodeBlockHighlightingTransformer : DocumentColorizingTransfo
             return _typeBrush;
 
         return null;
-    }
-
-    private static SolidColorBrush? ExtractBrush(HighlightingColor? color)
-    {
-        try
-        {
-            var brush = color?.Foreground?.GetBrush(null);
-            return brush as SolidColorBrush;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static IHighlightingDefinition? ResolveDefinition(string language)

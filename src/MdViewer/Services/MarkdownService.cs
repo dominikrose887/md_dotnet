@@ -17,11 +17,18 @@ public static class MarkdownService
         return PreviewCodeEnhancer.Enhance(html, darkTheme);
     }
 
-    public static string WrapInDocument(string bodyHtml, string title = "Document", bool darkTheme = false)
+    public static string WrapInDocument(
+        string bodyHtml,
+        string title = "Document",
+        bool darkTheme = false,
+        string? baseHref = null)
     {
         var theme = darkTheme ? "dark" : "light";
         var mermaidTheme = darkTheme ? "dark" : "default";
         var colorScheme = darkTheme ? "dark" : "light";
+        var baseTag = string.IsNullOrWhiteSpace(baseHref)
+            ? string.Empty
+            : $"<base href=\"{System.Net.WebUtility.HtmlEncode(baseHref)}\">";
 
         return $$"""
             <!DOCTYPE html>
@@ -31,6 +38,7 @@ public static class MarkdownService
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <meta name="color-scheme" content="{{colorScheme}}">
                 <title>{{System.Net.WebUtility.HtmlEncode(title)}}</title>
+                {{baseTag}}
                 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
                 <style>
             {{ThemePalette.PreviewDocumentCss}}
@@ -53,6 +61,19 @@ public static class MarkdownService
                         var meta = document.querySelector('meta[name="color-scheme"]');
                         if (meta) meta.setAttribute('content', theme);
                         window.__mdMermaidTheme = dark ? 'dark' : 'default';
+                    };
+
+                    window.__mdSetBaseHref = function (href) {
+                        var base = document.querySelector('base');
+                        if (!href) {
+                            if (base) base.remove();
+                            return;
+                        }
+                        if (!base) {
+                            base = document.createElement('base');
+                            document.head.insertBefore(base, document.head.firstChild);
+                        }
+                        base.href = href;
                     };
 
                     function renderMath() {
@@ -139,11 +160,15 @@ public static class MarkdownService
             """;
     }
 
-    public static string ToExportHtml(string markdown, string title = "Document", bool darkTheme = false) =>
-        WrapInDocument(ConvertToHtml(markdown, darkTheme), title, darkTheme);
+    public static string ToExportHtml(
+        string markdown,
+        string title = "Document",
+        bool darkTheme = false,
+        string? baseHref = null) =>
+        WrapInDocument(ConvertToHtml(markdown, darkTheme), title, darkTheme, baseHref);
 
-    public static string ToPreviewHtml(string markdown, bool darkTheme = false) =>
-        WrapInDocument(ConvertToHtml(markdown, darkTheme), darkTheme: darkTheme) + ScrollSyncScript;
+    public static string ToPreviewHtml(string markdown, bool darkTheme = false, string? baseHref = null) =>
+        WrapInDocument(ConvertToHtml(markdown, darkTheme), darkTheme: darkTheme, baseHref: baseHref) + ScrollSyncScript;
 
     private const string ScrollSyncScript = """
         <script>

@@ -9,6 +9,7 @@ public partial class App : Application
 {
     private bool _errorDialogShown;
     private string? _lastLoggedException;
+    private SingleInstanceService? _singleInstance;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -21,33 +22,32 @@ public partial class App : Application
 
         try
         {
+            _singleInstance = new SingleInstanceService();
+            if (!_singleInstance.IsPrimaryInstance)
+            {
+                AppLogger.Info("Secondary instance — forwarding args to primary");
+                SingleInstanceService.TrySendToExisting(e.Args);
+                Shutdown();
+                return;
+            }
+
             base.OnStartup(e);
 
             AppLogger.Info("Creating MainWindow");
             var window = new MainWindow();
+            MainWindow = window;
             AppLogger.Info("Showing MainWindow");
             window.Show();
             AppLogger.Info("MainWindow shown");
 
+            _singleInstance.StartServer(Dispatcher, args =>
+            {
+                if (MainWindow is MainWindow main)
+                    main.HandleExternalArgs(args);
+            });
+
             if (e.Args.Length == 0) return;
-
-            var path = e.Args[0];
-            AppLogger.Info($"Processing startup path: {path}");
-
-            if (File.Exists(path) && IsMarkdownFile(path))
-            {
-                AppLogger.Info("Opening markdown file from args");
-                window.OpenFileFromPath(path);
-            }
-            else if (Directory.Exists(path))
-            {
-                AppLogger.Info("Opening folder from args");
-                window.OpenFolderFromPath(path);
-            }
-            else
-            {
-                AppLogger.Warn($"Startup path not found or unsupported: {path}");
-            }
+            window.HandleExternalArgs(e.Args);
         }
         catch (Exception ex)
         {
@@ -64,6 +64,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         AppLogger.Info($"Application exit (code={e.ApplicationExitCode})");
+        _singleInstance?.Dispose();
         AppLogger.Shutdown();
         base.OnExit(e);
     }
@@ -79,7 +80,6 @@ public partial class App : Application
             AppLogger.Fatal("Unhandled UI (Dispatcher) exception", e.Exception);
         }
 
-        // Highlighting zero-length match floods layout; disable it to recover.
         if (e.Exception is InvalidOperationException &&
             e.Exception.Message.Contains("highlighting rule", StringComparison.OrdinalIgnoreCase))
         {
@@ -125,12 +125,5 @@ public partial class App : Application
     {
         AppLogger.Error("Unobserved task exception", e.Exception);
         e.SetObserved();
-    }
-
-    private static bool IsMarkdownFile(string path)
-    {
-        var ext = Path.GetExtension(path);
-        return ext.Equals(".md", StringComparison.OrdinalIgnoreCase)
-               || ext.Equals(".markdown", StringComparison.OrdinalIgnoreCase);
     }
 }
