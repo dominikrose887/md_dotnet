@@ -58,8 +58,27 @@ public partial class MainWindow
         if (_activeTab is null || _suppressTabEditorSync) return;
         _activeTab.Content = Editor.Text;
         _activeTab.CaretOffset = Editor.CaretOffset;
-        _activeTab.VerticalOffset = Editor.VerticalOffset;
+        _activeTab.ScrollRatio = CaptureCurrentScrollRatio();
         _activeTab.NotifyTitleChanged();
+    }
+
+    private double CaptureCurrentScrollRatio()
+    {
+        // Preview-only: editor is collapsed, so use the last known preview ratio.
+        if (_viewMode == ViewMode.Viewer)
+        {
+            var known = _scrollSync.LastKnownRatio;
+            return known >= 0 ? known : (_activeTab?.ScrollRatio ?? 0);
+        }
+
+        return GetEditorScrollRatio();
+    }
+
+    private void RememberActiveTabScroll(double ratio)
+    {
+        if (_activeTab is null || _suppressTabEditorSync) return;
+        _activeTab.ScrollRatio = ratio;
+        _scrollSync.RememberRatio(ratio);
     }
 
     private void ActivateTab(DocumentTab tab, bool updateEditor)
@@ -77,6 +96,9 @@ public partial class MainWindow
 
         if (!updateEditor) return;
 
+        var restoreRatio = Math.Clamp(tab.ScrollRatio, 0, 1);
+        _scrollSync.BeginReload(restoreRatio);
+
         _suppressTabEditorSync = true;
         try
         {
@@ -85,18 +107,25 @@ public partial class MainWindow
             _isDirty = tab.IsDirty;
 
             Editor.CaretOffset = Math.Clamp(tab.CaretOffset, 0, Editor.Document.TextLength);
-            Editor.ScrollToVerticalOffset(tab.VerticalOffset);
         }
         finally
         {
             _suppressTabEditorSync = false;
         }
 
+        // AvalonEdit resets scroll after Text assignment; restore after layout.
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_activeTab != tab) return;
+            SetEditorScrollRatio(restoreRatio);
+            _scrollSync.RememberRatio(restoreRatio);
+        }, System.Windows.Threading.DispatcherPriority.Loaded);
+
         UpdateTitle();
         RefreshFileTree();
         RebuildCodeBlockHighlighting();
         StatusText.Text = tab.FilePath ?? "Untitled";
-        _ = UpdatePreviewAsync();
+        _ = UpdatePreviewAsync(scrollRatio: restoreRatio);
     }
 
     private void OpenOrFocusFile(string path, bool preferPreviewIfNonEmpty = true)

@@ -57,16 +57,30 @@ public sealed class ScrollSyncService
 
     public double CurrentEditorRatio => _getEditorRatio?.Invoke() ?? 0;
 
+    /// <summary>True while a tab switch / document reload is restoring scroll.</summary>
+    public bool IsReloadSuppressing => _reloadSuppress;
+
+    /// <summary>Last known synced scroll ratio (0–1), or -1 if unknown.</summary>
+    public double LastKnownRatio => _lastEditorRatio;
+
+    public void RememberRatio(double ratio)
+    {
+        ratio = Clamp01(ratio);
+        _lastEditorRatio = ratio;
+        _lastPreviewRatio = ratio;
+    }
+
     /// <summary>
     /// Call before a full preview document reload so a transient scrollY=0
     /// cannot yank the editor to the top.
     /// </summary>
-    public void BeginReload()
+    public void BeginReload(double? restoreRatio = null)
     {
         _reloadSuppress = true;
-        _reloadRestoreRatio = _lastEditorRatio >= 0
+        _reloadRestoreRatio = restoreRatio ?? (_lastEditorRatio >= 0
             ? _lastEditorRatio
-            : Clamp01(_getEditorRatio?.Invoke() ?? 0);
+            : Clamp01(_getEditorRatio?.Invoke() ?? 0));
+        RememberRatio(_reloadRestoreRatio);
         _activeSource = ScrollSource.None;
         _editorFlushQueued = false;
         _editorFlushTimer.Stop();

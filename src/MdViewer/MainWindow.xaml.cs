@@ -232,7 +232,13 @@ public partial class MainWindow : Window
             if (message.RootElement.GetProperty("type").GetString() != "scroll") return;
 
             var ratio = message.RootElement.GetProperty("ratio").GetDouble();
-            Dispatcher.Invoke(() => _scrollSync.OnPreviewScrolled(ratio));
+            Dispatcher.Invoke(() =>
+            {
+                // Ignore transient scroll=0 during tab switch / preview reload.
+                if (!_scrollSync.IsReloadSuppressing)
+                    RememberActiveTabScroll(ratio);
+                _scrollSync.OnPreviewScrolled(ratio);
+            });
         }
         catch
         {
@@ -242,6 +248,11 @@ public partial class MainWindow : Window
 
     private void Editor_ScrollOffsetChanged(object? sender, EventArgs e)
     {
+        if (_suppressTabEditorSync) return;
+
+        if (_viewMode != ViewMode.Viewer && !_scrollSync.IsReloadSuppressing)
+            RememberActiveTabScroll(GetEditorScrollRatio());
+
         if (!_webViewReady || _viewMode == ViewMode.Viewer) return;
         _scrollSync.OnEditorScrolled();
     }
@@ -308,7 +319,7 @@ public partial class MainWindow : Window
         await UpdatePreviewAsync();
     }
 
-    private async Task UpdatePreviewAsync(bool forceNavigate = false)
+    private async Task UpdatePreviewAsync(bool forceNavigate = false, double? scrollRatio = null)
     {
         if (!_webViewReady) return;
 
@@ -329,18 +340,27 @@ public partial class MainWindow : Window
 
             _previewMappedRoot = previewRoot;
             var bodyHtml = MarkdownService.ConvertToHtml(Editor.Text, dark);
+            var restoreRatio = scrollRatio;
 
             if (!forceNavigate && _previewShellReady && PreviewWebView.CoreWebView2 is not null)
             {
                 var payload = JsonSerializer.Serialize(bodyHtml);
                 var basePayload = JsonSerializer.Serialize(baseHref);
                 var darkJs = dark ? "true" : "false";
+                var scrollJs = restoreRatio.HasValue
+                    ? $$"""
+                      var max = document.documentElement.scrollHeight - window.innerHeight;
+                      var y = max > 0 ? max * {{restoreRatio.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}} : 0;
+                      """
+                    : """
+                      var y = window.scrollY;
+                      """;
                 var script = $$"""
                     (function(){
                       window.__mdSyncSuppress = true;
                       var root = document.getElementById('md-content');
                       if (!root) return 'missing';
-                      var y = window.scrollY;
+                      {{scrollJs}}
                       if (window.__mdSetTheme) window.__mdSetTheme({{darkJs}});
                       if (window.__mdSetBaseHref) window.__mdSetBaseHref({{basePayload}});
                       root.innerHTML = {{payload}};
@@ -353,12 +373,20 @@ public partial class MainWindow : Window
 
                 var result = await PreviewWebView.ExecuteScriptAsync(script);
                 if (result.Contains("ok", StringComparison.Ordinal))
+                {
+                    if (restoreRatio.HasValue)
+                    {
+                        _scrollSync.RememberRatio(restoreRatio.Value);
+                        await _scrollSync.EndReloadAsync();
+                    }
+
                     return;
+                }
 
                 _previewShellReady = false;
             }
 
-            _scrollSync.BeginReload();
+            _scrollSync.BeginReload(restoreRatio);
             PreviewWebView.NavigateToString(MarkdownService.ToPreviewHtml(Editor.Text, dark, baseHref));
         }
         catch (Exception ex)
