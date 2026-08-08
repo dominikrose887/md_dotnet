@@ -46,7 +46,7 @@ dotnet publish $Project `
     -c Release `
     -r win-x64 `
     --self-contained true `
-    -p:PublishReadyToRun=false `
+    -p:PublishReadyToRun=true `
     -p:PublishSingleFile=false `
     -p:Version=$Version `
     -p:AssemblyVersion=$FourPart `
