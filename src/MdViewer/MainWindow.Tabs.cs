@@ -58,27 +58,26 @@ public partial class MainWindow
         if (_activeTab is null || _suppressTabEditorSync) return;
         _activeTab.Content = Editor.Text;
         _activeTab.CaretOffset = Editor.CaretOffset;
-        _activeTab.ScrollRatio = CaptureCurrentScrollRatio();
+        _activeTab.ScrollLine = CaptureCurrentScrollLine();
         _activeTab.NotifyTitleChanged();
     }
 
-    private double CaptureCurrentScrollRatio()
+    private int CaptureCurrentScrollLine()
     {
-        // Preview-only: editor is collapsed, so use the last known preview ratio.
         if (_viewMode == ViewMode.Viewer)
         {
-            var known = _scrollSync.LastKnownRatio;
-            return known >= 0 ? known : (_activeTab?.ScrollRatio ?? 0);
+            var known = _scrollSync.LastKnownLine;
+            return known >= 0 ? known : (_activeTab?.ScrollLine ?? 0);
         }
 
-        return GetEditorScrollRatio();
+        return GetEditorVisibleLine();
     }
 
-    private void RememberActiveTabScroll(double ratio)
+    private void RememberActiveTabScroll(int line)
     {
         if (_activeTab is null || _suppressTabEditorSync) return;
-        _activeTab.ScrollRatio = ratio;
-        _scrollSync.RememberRatio(ratio);
+        _activeTab.ScrollLine = Math.Max(0, line);
+        _scrollSync.RememberLine(line);
     }
 
     private void ActivateTab(DocumentTab tab, bool updateEditor)
@@ -96,8 +95,8 @@ public partial class MainWindow
 
         if (!updateEditor) return;
 
-        var restoreRatio = Math.Clamp(tab.ScrollRatio, 0, 1);
-        _scrollSync.BeginReload(restoreRatio);
+        var restoreLine = Math.Max(0, tab.ScrollLine);
+        _scrollSync.BeginReload(restoreLine);
 
         _suppressTabEditorSync = true;
         try
@@ -117,8 +116,8 @@ public partial class MainWindow
         Dispatcher.BeginInvoke(() =>
         {
             if (_activeTab != tab) return;
-            SetEditorScrollRatio(restoreRatio);
-            _scrollSync.RememberRatio(restoreRatio);
+            SetEditorVisibleLine(restoreLine);
+            _scrollSync.RememberLine(restoreLine);
         }, System.Windows.Threading.DispatcherPriority.Loaded);
 
         UpdateTitle();
@@ -126,7 +125,7 @@ public partial class MainWindow
         RebuildCodeBlockHighlighting();
         UpdateStats();
         StatusText.Text = tab.FilePath ?? "Untitled";
-        _ = UpdatePreviewAsync(scrollRatio: restoreRatio);
+        _ = UpdatePreviewAsync(scrollLine: restoreLine);
     }
 
     private void OpenOrFocusFile(string path, bool preferPreviewIfNonEmpty = true)

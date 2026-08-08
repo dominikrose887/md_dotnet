@@ -5,7 +5,8 @@ using Microsoft.Web.WebView2.Wpf;
 namespace MdViewer.Services;
 
 /// <summary>
-/// Keeps AvalonEdit and WebView2 scroll positions aligned without feedback loops.
+/// Keeps AvalonEdit and WebView2 aligned by markdown source line (0-based),
+/// matching the VS Code preview approach — not by scroll-height ratio.
 /// </summary>
 public sealed class ScrollSyncService
 {
@@ -19,15 +20,15 @@ public sealed class ScrollSyncService
     private readonly DispatcherTimer _editorFlushTimer;
     private readonly DispatcherTimer _releaseTimer;
     private ScrollSource _activeSource = ScrollSource.None;
-    private double _lastEditorRatio = -1;
-    private double _lastPreviewRatio = -1;
-    private double _pendingEditorRatio;
+    private int _lastEditorLine = -1;
+    private int _lastPreviewLine = -1;
+    private int _pendingEditorLine;
     private bool _editorFlushQueued;
     private bool _reloadSuppress;
-    private double _reloadRestoreRatio = -1;
+    private int _reloadRestoreLine = -1;
     private WebView2? _webView;
-    private Func<double>? _getEditorRatio;
-    private Action<double>? _setEditorRatio;
+    private Func<int>? _getEditorLine;
+    private Action<int>? _setEditorLine;
     private bool _enabled = true;
 
     public ScrollSyncService()
@@ -35,7 +36,7 @@ public sealed class ScrollSyncService
         _editorFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(32) };
         _editorFlushTimer.Tick += EditorFlushTimer_Tick;
 
-        _releaseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+        _releaseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _releaseTimer.Tick += (_, _) =>
         {
             _releaseTimer.Stop();
@@ -45,43 +46,42 @@ public sealed class ScrollSyncService
 
     public void Attach(
         WebView2 webView,
-        Func<double> getEditorRatio,
-        Action<double> setEditorRatio)
+        Func<int> getEditorLine,
+        Action<int> setEditorLine)
     {
         _webView = webView;
-        _getEditorRatio = getEditorRatio;
-        _setEditorRatio = setEditorRatio;
+        _getEditorLine = getEditorLine;
+        _setEditorLine = setEditorLine;
     }
 
     public void SetEnabled(bool enabled) => _enabled = enabled;
 
-    public double CurrentEditorRatio => _getEditorRatio?.Invoke() ?? 0;
-
     /// <summary>True while a tab switch / document reload is restoring scroll.</summary>
     public bool IsReloadSuppressing => _reloadSuppress;
 
-    /// <summary>Last known synced scroll ratio (0–1), or -1 if unknown.</summary>
-    public double LastKnownRatio =>
-        _lastPreviewRatio >= 0 ? _lastPreviewRatio : _lastEditorRatio;
+    /// <summary>Last known synced source line (0-based), or -1 if unknown.</summary>
+    public int LastKnownLine =>
+        _lastPreviewLine >= 0 ? _lastPreviewLine : _lastEditorLine;
 
-    public void RememberRatio(double ratio)
+    public void RememberLine(int line)
     {
-        ratio = Clamp01(ratio);
-        _lastEditorRatio = ratio;
-        _lastPreviewRatio = ratio;
+        line = Math.Max(0, line);
+        _lastEditorLine = line;
+        _lastPreviewLine = line;
     }
 
     /// <summary>
-    /// Reads the live preview scroll ratio from WebView2. Returns null if unavailable.
+    /// Reads the live preview source line from WebView2. Returns null if unavailable.
     /// </summary>
-    public async Task<double?> QueryPreviewScrollRatioAsync()
+    public async Task<int?> QueryPreviewLineAsync()
     {
         if (_webView?.CoreWebView2 is null) return null;
 
         const string script = """
             (function() {
-              var max = document.documentElement.scrollHeight - window.innerHeight;
-              return max > 0 ? window.scrollY / max : 0;
+              if (typeof window.__mdGetLineAtScroll === 'function')
+                return window.__mdGetLineAtScroll();
+              return 0;
             })()
             """;
 
@@ -89,8 +89,8 @@ public sealed class ScrollSyncService
         {
             var raw = await _webView.ExecuteScriptAsync(script);
             if (string.IsNullOrWhiteSpace(raw) || raw == "null") return null;
-            if (double.TryParse(raw.Trim('"'), NumberStyles.Float, CultureInfo.InvariantCulture, out var ratio))
-                return Clamp01(ratio);
+            if (int.TryParse(raw.Trim('"'), NumberStyles.Integer, CultureInfo.InvariantCulture, out var line))
+                return Math.Max(0, line);
         }
         catch
         {
@@ -100,28 +100,25 @@ public sealed class ScrollSyncService
         return null;
     }
 
-    /// <summary>
-    /// Applies a ratio to the editor immediately (even when live sync is disabled).
-    /// </summary>
-    public void ApplyRatioToEditor(double ratio)
+    public void ApplyLineToEditor(int line)
     {
-        ratio = Clamp01(ratio);
-        _lastEditorRatio = ratio;
-        _lastPreviewRatio = ratio;
-        _setEditorRatio?.Invoke(ratio);
+        line = Math.Max(0, line);
+        _lastEditorLine = line;
+        _lastPreviewLine = line;
+        _setEditorLine?.Invoke(line);
     }
 
     /// <summary>
     /// Call before a full preview document reload so a transient scrollY=0
     /// cannot yank the editor to the top.
     /// </summary>
-    public void BeginReload(double? restoreRatio = null)
+    public void BeginReload(int? restoreLine = null)
     {
         _reloadSuppress = true;
-        _reloadRestoreRatio = restoreRatio ?? (_lastEditorRatio >= 0
-            ? _lastEditorRatio
-            : Clamp01(_getEditorRatio?.Invoke() ?? 0));
-        RememberRatio(_reloadRestoreRatio);
+        _reloadRestoreLine = restoreLine ?? (_lastEditorLine >= 0
+            ? _lastEditorLine
+            : Math.Max(0, _getEditorLine?.Invoke() ?? 0));
+        RememberLine(_reloadRestoreLine);
         _activeSource = ScrollSource.None;
         _editorFlushQueued = false;
         _editorFlushTimer.Stop();
@@ -129,29 +126,28 @@ public sealed class ScrollSyncService
 
     public async Task EndReloadAsync()
     {
-        var ratio = _reloadRestoreRatio >= 0
-            ? _reloadRestoreRatio
-            : Clamp01(_getEditorRatio?.Invoke() ?? 0);
+        var line = _reloadRestoreLine >= 0
+            ? _reloadRestoreLine
+            : Math.Max(0, _getEditorLine?.Invoke() ?? 0);
 
-        await ApplyRatioToPreviewAsync(ratio);
+        await ApplyLineToPreviewAsync(line);
 
-        // Late scroll events from the new document must still be ignored briefly.
         await Task.Delay(160);
         _reloadSuppress = false;
-        _reloadRestoreRatio = -1;
+        _reloadRestoreLine = -1;
     }
 
     public void OnEditorScrolled()
     {
         if (_reloadSuppress) return;
 
-        var ratio = Clamp01(_getEditorRatio?.Invoke() ?? 0);
-        _lastEditorRatio = ratio;
+        var line = Math.Max(0, _getEditorLine?.Invoke() ?? 0);
+        _lastEditorLine = line;
 
         if (!_enabled || _activeSource == ScrollSource.Preview) return;
-        if (NearlyEqual(ratio, _lastPreviewRatio)) return;
+        if (line == _lastPreviewLine) return;
 
-        _pendingEditorRatio = ratio;
+        _pendingEditorLine = line;
         _activeSource = ScrollSource.Editor;
         _editorFlushQueued = true;
 
@@ -161,39 +157,33 @@ public sealed class ScrollSyncService
         BumpReleaseTimer();
     }
 
-    public void OnPreviewScrolled(double ratio, bool force = false)
+    public void OnPreviewScrolled(int line, bool force = false)
     {
-        // Always remember preview position so single-pane modes stay aligned on switch.
-        ratio = Clamp01(ratio);
-        _lastPreviewRatio = ratio;
+        line = Math.Max(0, line);
+        _lastPreviewLine = line;
 
         if (!_enabled || _reloadSuppress) return;
         if (!force && _activeSource == ScrollSource.Editor) return;
-
-        if (!force && NearlyEqual(ratio, _lastEditorRatio))
-            return;
+        if (!force && line == _lastEditorLine) return;
 
         _activeSource = ScrollSource.Preview;
-        _lastEditorRatio = ratio;
-        _setEditorRatio?.Invoke(ratio);
+        _lastEditorLine = line;
+        _setEditorLine?.Invoke(line);
         BumpReleaseTimer();
     }
 
-    public async Task ApplyRatioToPreviewAsync(double ratio)
+    public async Task ApplyLineToPreviewAsync(int line)
     {
         if (_webView?.CoreWebView2 is null) return;
 
-        ratio = Clamp01(ratio);
-        _lastEditorRatio = ratio;
-        _lastPreviewRatio = ratio;
+        line = Math.Max(0, line);
+        _lastEditorLine = line;
+        _lastPreviewLine = line;
 
         var script = $$"""
             (function() {
-              window.__mdSyncSuppress = true;
-              var max = document.documentElement.scrollHeight - window.innerHeight;
-              var y = max > 0 ? max * {{ratio.ToString(CultureInfo.InvariantCulture)}} : 0;
-              window.scrollTo({ top: y, left: 0, behavior: 'instant' });
-              setTimeout(function() { window.__mdSyncSuppress = false; }, 120);
+              if (typeof window.__mdScrollToLine === 'function')
+                window.__mdScrollToLine({{line.ToString(CultureInfo.InvariantCulture)}});
             })();
             """;
 
@@ -215,10 +205,10 @@ public sealed class ScrollSyncService
             return;
         }
 
-        var ratio = _lastEditorRatio >= 0
-            ? _lastEditorRatio
-            : Clamp01(_getEditorRatio?.Invoke() ?? 0);
-        await ApplyRatioToPreviewAsync(ratio);
+        var line = _lastEditorLine >= 0
+            ? _lastEditorLine
+            : Math.Max(0, _getEditorLine?.Invoke() ?? 0);
+        await ApplyLineToPreviewAsync(line);
     }
 
     private async void EditorFlushTimer_Tick(object? sender, EventArgs e)
@@ -232,12 +222,12 @@ public sealed class ScrollSyncService
         _editorFlushQueued = false;
         _editorFlushTimer.Stop();
 
-        var ratio = _pendingEditorRatio;
-        if (NearlyEqual(ratio, _lastPreviewRatio)) return;
+        var line = _pendingEditorLine;
+        if (line == _lastPreviewLine) return;
 
-        _lastEditorRatio = ratio;
-        _lastPreviewRatio = ratio;
-        await ApplyRatioToPreviewAsync(ratio);
+        _lastEditorLine = line;
+        _lastPreviewLine = line;
+        await ApplyLineToPreviewAsync(line);
     }
 
     private void BumpReleaseTimer()
@@ -245,10 +235,4 @@ public sealed class ScrollSyncService
         _releaseTimer.Stop();
         _releaseTimer.Start();
     }
-
-    private static double Clamp01(double value) =>
-        value < 0 ? 0 : value > 1 ? 1 : value;
-
-    private static bool NearlyEqual(double a, double b) =>
-        Math.Abs(a - b) < 0.008;
 }

@@ -245,13 +245,27 @@ public static class PreviewCodeEnhancer
 
                 highlighted = EmphasizeAnnotations(highlighted, normalized, darkTheme);
                 var langClass = string.IsNullOrWhiteSpace(language) ? "" : $" language-{WebUtility.HtmlEncode(language)}";
-                return $"<pre class=\"code-highlight\"><code class=\"hljs{langClass}\">{highlighted}</code></pre>";
+                var dataLine = ExtractDataLineAttribute(match.Value);
+                return $"<pre class=\"code-highlight code-line\"{dataLine}><code class=\"hljs{langClass}\">{highlighted}</code></pre>";
             }
             catch
             {
-                return $"<pre class=\"code-highlight\"><code class=\"hljs\">{WebUtility.HtmlEncode(code)}</code></pre>";
+                var dataLine = ExtractDataLineAttribute(match.Value);
+                return $"<pre class=\"code-highlight code-line\"{dataLine}><code class=\"hljs\">{WebUtility.HtmlEncode(code)}</code></pre>";
             }
         });
+    }
+
+    private static readonly Regex DataLineRegex = new(
+        @"\bdata-line\s*=\s*(?:""(?<v>[^""]*)""|'(?<v>[^']*)'|(?<v>\d+))",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static string ExtractDataLineAttribute(string preHtml)
+    {
+        var m = DataLineRegex.Match(preHtml);
+        if (!m.Success) return string.Empty;
+        var value = WebUtility.HtmlEncode(m.Groups["v"].Value);
+        return $" data-line=\"{value}\"";
     }
 
     private static readonly StyleDictionary PastelLight = CreatePastel(dark: false);

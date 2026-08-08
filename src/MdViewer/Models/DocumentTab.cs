@@ -11,6 +11,7 @@ public sealed class DocumentTab : INotifyPropertyChanged
     private string _savedContent = string.Empty;
     private bool _isActive;
     private double _scrollRatio;
+    private int _scrollLine;
     private int _caretOffset;
 
     public Guid Id { get; } = Guid.NewGuid();
@@ -67,7 +68,7 @@ public sealed class DocumentTab : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Document scroll position as 0–1 ratio (editor / preview).</summary>
+    /// <summary>Legacy ratio field — prefer <see cref="ScrollLine"/>.</summary>
     public double ScrollRatio
     {
         get => _scrollRatio;
@@ -76,6 +77,19 @@ public sealed class DocumentTab : INotifyPropertyChanged
             var clamped = value < 0 ? 0 : value > 1 ? 1 : value;
             if (Math.Abs(_scrollRatio - clamped) < 0.001) return;
             _scrollRatio = clamped;
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>Visible source line (0-based) shared by editor and preview.</summary>
+    public int ScrollLine
+    {
+        get => _scrollLine;
+        set
+        {
+            var clamped = value < 0 ? 0 : value;
+            if (_scrollLine == clamped) return;
+            _scrollLine = clamped;
             OnPropertyChanged();
         }
     }

@@ -9,6 +9,7 @@ public static class MarkdownService
         .UseAdvancedExtensions()
         .UseAutoIdentifiers(AutoIdentifierOptions.GitHub)
         .UseYamlFrontMatter()
+        .Use(new SourceLineMapExtension())
         .Build();
 
     public static string ConvertToHtml(string markdown, bool darkTheme = false)
@@ -102,7 +103,9 @@ public static class MarkdownService
                             var pre = code.parentElement;
                             if (!pre || pre.getAttribute('data-rendered') === '1') return;
                             var host = document.createElement('div');
-                            host.className = 'mermaid';
+                            host.className = 'mermaid code-line';
+                            var line = pre.getAttribute('data-line');
+                            if (line !== null) host.setAttribute('data-line', line);
                             host.textContent = code.textContent || '';
                             pre.replaceWith(host);
                         });
@@ -175,32 +178,95 @@ public static class MarkdownService
             (function () {
                 var lastPosted = -1;
                 var ticking = false;
-                function postRatio(force) {
+
+                function getCodeLineElements() {
+                    var nodes = document.querySelectorAll('.code-line[data-line]');
+                    var result = [];
+                    for (var i = 0; i < nodes.length; i++) {
+                        var el = nodes[i];
+                        var line = parseInt(el.getAttribute('data-line'), 10);
+                        if (isNaN(line)) continue;
+                        var rect = el.getBoundingClientRect();
+                        if (rect.height === 0 && rect.width === 0) continue;
+                        if (window.getComputedStyle(el).display === 'none') continue;
+                        result.push({ element: el, line: line });
+                    }
+                    result.sort(function (a, b) { return a.line - b.line; });
+                    return result;
+                }
+
+                function documentTop(el) {
+                    return el.getBoundingClientRect().top + window.scrollY;
+                }
+
+                function getLineAtScroll() {
+                    var lines = getCodeLineElements();
+                    if (lines.length === 0) return 0;
+                    // Anchor near the top of the viewport (VS Code-style).
+                    var offset = window.scrollY + Math.min(32, window.innerHeight * 0.08);
+                    var lo = 0, hi = lines.length - 1;
+                    while (lo < hi) {
+                        var mid = Math.ceil((lo + hi) / 2);
+                        if (documentTop(lines[mid].element) > offset) hi = mid - 1;
+                        else lo = mid;
+                    }
+                    return lines[lo].line;
+                }
+
+                function scrollToLine(line) {
+                    window.__mdSyncSuppress = true;
+                    try {
+                        var lines = getCodeLineElements();
+                        if (lines.length === 0) return;
+                        var target = lines[0];
+                        for (var i = 0; i < lines.length; i++) {
+                            if (lines[i].line <= line) target = lines[i];
+                            else break;
+                        }
+                        var top = Math.max(0, documentTop(target.element));
+                        window.scrollTo({ top: top, left: 0, behavior: 'instant' });
+                    } finally {
+                        setTimeout(function () { window.__mdSyncSuppress = false; }, 140);
+                    }
+                }
+
+                function postLine(force, lineOverride) {
                     if (window.__mdSyncSuppress) return;
-                    var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-                    var ratio = maxScroll > 0 ? window.scrollY / maxScroll : 0;
-                    if (!force && Math.abs(ratio - lastPosted) < 0.008) return;
-                    lastPosted = ratio;
+                    var line = typeof lineOverride === 'number' ? lineOverride : getLineAtScroll();
+                    if (!force && line === lastPosted) return;
+                    lastPosted = line;
                     if (window.chrome && window.chrome.webview) {
                         window.chrome.webview.postMessage(JSON.stringify({
                             type: 'scroll',
-                            ratio: ratio,
+                            line: line,
                             force: !!force
                         }));
                     }
                 }
+
+                window.__mdScrollToLine = scrollToLine;
+                window.__mdGetLineAtScroll = getLineAtScroll;
+
                 window.addEventListener('scroll', function () {
                     if (window.__mdSyncSuppress || ticking) return;
                     ticking = true;
                     requestAnimationFrame(function () {
                         ticking = false;
-                        postRatio(false);
+                        postLine(false);
                     });
                 }, { passive: true });
-                // Re-assert position on click so the editor can catch up after view-mode changes.
-                window.addEventListener('click', function () {
-                    postRatio(true);
-                }, { passive: true });
+
+                window.addEventListener('click', function (e) {
+                    var el = e.target && e.target.closest ? e.target.closest('.code-line[data-line]') : null;
+                    if (el) {
+                        var line = parseInt(el.getAttribute('data-line'), 10);
+                        if (!isNaN(line)) {
+                            postLine(true, line);
+                            return;
+                        }
+                    }
+                    postLine(true);
+                }, true);
             })();
         </script>
         """;

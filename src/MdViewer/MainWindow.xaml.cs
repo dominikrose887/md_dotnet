@@ -83,8 +83,8 @@ public partial class MainWindow : Window
 
             _scrollSync.Attach(
                 PreviewWebView,
-                getEditorRatio: GetEditorScrollRatio,
-                setEditorRatio: SetEditorScrollRatio);
+                getEditorLine: GetEditorVisibleLine,
+                setEditorLine: SetEditorVisibleLine);
 
             _findReplace = new FindReplaceService(Editor);
             _focusMode = new FocusModeService(Editor);
@@ -227,15 +227,16 @@ public partial class MainWindow : Window
             using var message = JsonDocument.Parse(e.TryGetWebMessageAsString());
             if (message.RootElement.GetProperty("type").GetString() != "scroll") return;
 
-            var ratio = message.RootElement.GetProperty("ratio").GetDouble();
+            var line = message.RootElement.TryGetProperty("line", out var lineEl)
+                ? lineEl.GetInt32()
+                : 0;
             var force = message.RootElement.TryGetProperty("force", out var forceEl) &&
                         forceEl.ValueKind is JsonValueKind.True;
             Dispatcher.Invoke(() =>
             {
-                // Ignore transient scroll=0 during tab switch / preview reload.
                 if (!_scrollSync.IsReloadSuppressing)
-                    RememberActiveTabScroll(ratio);
-                _scrollSync.OnPreviewScrolled(ratio, force);
+                    RememberActiveTabScroll(line);
+                _scrollSync.OnPreviewScrolled(line, force);
             });
         }
         catch
@@ -249,23 +250,42 @@ public partial class MainWindow : Window
         if (_suppressTabEditorSync) return;
 
         if (_viewMode != ViewMode.Viewer && !_scrollSync.IsReloadSuppressing)
-            RememberActiveTabScroll(GetEditorScrollRatio());
+            RememberActiveTabScroll(GetEditorVisibleLine());
 
         if (!_webViewReady) return;
-        // Keep the hidden preview aligned even in editor-only mode.
         _scrollSync.OnEditorScrolled();
     }
 
-    private double GetEditorScrollRatio()
+    /// <summary>First visible editor line, 0-based (matches Markdig / data-line).</summary>
+    private int GetEditorVisibleLine()
     {
-        var maxScroll = Math.Max(0, Editor.ExtentHeight - Editor.ViewportHeight);
-        return maxScroll > 0 ? Editor.VerticalOffset / maxScroll : 0;
+        try
+        {
+            var textView = Editor.TextArea.TextView;
+            textView.EnsureVisualLines();
+            var docLine = textView.GetDocumentLineByVisualTop(textView.ScrollOffset.Y);
+            return Math.Max(0, docLine.LineNumber - 1);
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
-    private void SetEditorScrollRatio(double ratio)
+    private void SetEditorVisibleLine(int zeroBasedLine)
     {
-        var maxScroll = Math.Max(0, Editor.ExtentHeight - Editor.ViewportHeight);
-        Editor.ScrollToVerticalOffset(maxScroll * Math.Clamp(ratio, 0, 1));
+        try
+        {
+            var lineNumber = Math.Clamp(zeroBasedLine + 1, 1, Math.Max(1, Editor.Document.LineCount));
+            var textView = Editor.TextArea.TextView;
+            textView.EnsureVisualLines();
+            var visualTop = textView.GetVisualTopByDocumentLine(lineNumber);
+            Editor.ScrollToVerticalOffset(Math.Max(0, visualTop));
+        }
+        catch
+        {
+            Editor.ScrollTo(Math.Clamp(zeroBasedLine + 1, 1, Math.Max(1, Editor.Document.LineCount)), 0);
+        }
     }
 
     private void Editor_TextChanged(object? sender, EventArgs e)
@@ -318,7 +338,7 @@ public partial class MainWindow : Window
         await UpdatePreviewAsync();
     }
 
-    private async Task UpdatePreviewAsync(bool forceNavigate = false, double? scrollRatio = null)
+    private async Task UpdatePreviewAsync(bool forceNavigate = false, int? scrollLine = null)
     {
         if (!_webViewReady) return;
 
@@ -339,32 +359,31 @@ public partial class MainWindow : Window
 
             _previewMappedRoot = previewRoot;
             var bodyHtml = MarkdownService.ConvertToHtml(Editor.Text, dark);
-            var restoreRatio = scrollRatio;
+            var restoreLine = scrollLine;
 
             if (!forceNavigate && _previewShellReady && PreviewWebView.CoreWebView2 is not null)
             {
                 var payload = JsonSerializer.Serialize(bodyHtml);
                 var basePayload = JsonSerializer.Serialize(baseHref);
                 var darkJs = dark ? "true" : "false";
-                var scrollJs = restoreRatio.HasValue
+                var scrollJs = restoreLine.HasValue
                     ? $$"""
-                      var max = document.documentElement.scrollHeight - window.innerHeight;
-                      var y = max > 0 ? max * {{restoreRatio.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}} : 0;
+                      if (window.__mdScrollToLine) window.__mdScrollToLine({{restoreLine.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}});
                       """
                     : """
                       var y = window.scrollY;
+                      window.scrollTo({ top: y, left: 0, behavior: 'instant' });
                       """;
                 var script = $$"""
                     (function(){
                       window.__mdSyncSuppress = true;
                       var root = document.getElementById('md-content');
                       if (!root) return 'missing';
-                      {{scrollJs}}
                       if (window.__mdSetTheme) window.__mdSetTheme({{darkJs}});
                       if (window.__mdSetBaseHref) window.__mdSetBaseHref({{basePayload}});
                       root.innerHTML = {{payload}};
                       if (window.__mdRender) window.__mdRender();
-                      window.scrollTo({ top: y, left: 0, behavior: 'instant' });
+                      {{scrollJs}}
                       setTimeout(function(){ window.__mdSyncSuppress = false; }, 80);
                       return 'ok';
                     })();
@@ -373,11 +392,11 @@ public partial class MainWindow : Window
                 var result = await PreviewWebView.ExecuteScriptAsync(script);
                 if (result.Contains("ok", StringComparison.Ordinal))
                 {
-                    if (restoreRatio.HasValue)
-                    {
-                        _scrollSync.RememberRatio(restoreRatio.Value);
+                    if (restoreLine.HasValue)
+                        _scrollSync.RememberLine(restoreLine.Value);
+
+                    if (_scrollSync.IsReloadSuppressing)
                         await _scrollSync.EndReloadAsync();
-                    }
 
                     return;
                 }
@@ -385,7 +404,7 @@ public partial class MainWindow : Window
                 _previewShellReady = false;
             }
 
-            _scrollSync.BeginReload(restoreRatio);
+            _scrollSync.BeginReload(restoreLine);
             PreviewWebView.NavigateToString(MarkdownService.ToPreviewHtml(Editor.Text, dark, baseHref));
         }
         catch (Exception ex)
@@ -532,7 +551,7 @@ public partial class MainWindow : Window
     private void SetViewMode(ViewMode mode)
     {
         var previousMode = _viewMode;
-        var ratio = CaptureCurrentScrollRatio();
+        var line = CaptureCurrentScrollLine();
         _viewMode = mode;
 
         ToolbarEditorButton.IsChecked = mode == ViewMode.Editor;
@@ -556,7 +575,6 @@ public partial class MainWindow : Window
                 EditorPanel.Visibility = Visibility.Visible;
                 PreviewPanel.Visibility = Visibility.Collapsed;
                 EditorPanel.Margin = new Thickness(10, 0, 10, 0);
-                // Keep tracking enabled so the hidden preview stays aligned.
                 _scrollSync.SetEnabled(true);
                 break;
             case ViewMode.Viewer:
@@ -582,38 +600,36 @@ public partial class MainWindow : Window
                 break;
         }
 
-        // Collapsing/expanding panes can reset AvalonEdit scroll — restore after layout.
-        // When leaving preview, prefer a live WebView query over the cached ratio.
-        _ = RestoreScrollAfterViewModeChangeAsync(previousMode, mode, ratio);
+        _ = RestoreScrollAfterViewModeChangeAsync(previousMode, mode, line);
     }
 
-    private async Task RestoreScrollAfterViewModeChangeAsync(ViewMode previousMode, ViewMode mode, double fallbackRatio)
+    private async Task RestoreScrollAfterViewModeChangeAsync(ViewMode previousMode, ViewMode mode, int fallbackLine)
     {
-        var ratio = fallbackRatio;
+        var line = fallbackLine;
 
         if (previousMode == ViewMode.Viewer || previousMode == ViewMode.Split)
         {
-            var live = await _scrollSync.QueryPreviewScrollRatioAsync();
+            var live = await _scrollSync.QueryPreviewLineAsync();
             if (live is not null)
-                ratio = live.Value;
+                line = live.Value;
         }
         else if (previousMode == ViewMode.Editor)
         {
-            ratio = GetEditorScrollRatio();
+            line = GetEditorVisibleLine();
         }
 
-        _scrollSync.RememberRatio(ratio);
-        RememberActiveTabScroll(ratio);
+        _scrollSync.RememberLine(line);
+        RememberActiveTabScroll(line);
 
         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
 
         if (_viewMode != mode) return;
 
         if (mode is ViewMode.Editor or ViewMode.Split)
-            _scrollSync.ApplyRatioToEditor(ratio);
+            _scrollSync.ApplyLineToEditor(line);
 
         if (mode is ViewMode.Viewer or ViewMode.Split)
-            await _scrollSync.ApplyRatioToPreviewAsync(ratio);
+            await _scrollSync.ApplyLineToPreviewAsync(line);
     }
 
     private void ShowFind(bool focusReplace = false)

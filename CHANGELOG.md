@@ -2,6 +2,11 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.6] — 2026-08-08
+
+### Fixed
+- **Preview ↔ editor scroll sync** — replaced unreliable height-ratio sync with VS Code-style source-line mapping (`data-line` / `code-line`). Editor and preview now track the same markdown block, including after view-mode switches and preview clicks.
+
 ## [1.1.5] — 2026-08-08
 
 ### Fixed
