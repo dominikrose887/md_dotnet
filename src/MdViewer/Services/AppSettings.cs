@@ -18,7 +18,6 @@ public sealed class AppSettings
     public bool IsDarkTheme { get; set; }
     public bool IsSidebarVisible { get; set; }
     public bool IsFocusMode { get; set; }
-    public bool IsTypewriterMode { get; set; }
     public string? LastFolder { get; set; }
     public List<string> RecentFiles { get; set; } = [];
     public List<string> RecentFolders { get; set; } = [];

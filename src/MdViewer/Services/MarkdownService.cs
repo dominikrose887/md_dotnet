@@ -175,14 +175,18 @@ public static class MarkdownService
             (function () {
                 var lastPosted = -1;
                 var ticking = false;
-                function postRatio() {
+                function postRatio(force) {
                     if (window.__mdSyncSuppress) return;
                     var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
                     var ratio = maxScroll > 0 ? window.scrollY / maxScroll : 0;
-                    if (Math.abs(ratio - lastPosted) < 0.008) return;
+                    if (!force && Math.abs(ratio - lastPosted) < 0.008) return;
                     lastPosted = ratio;
                     if (window.chrome && window.chrome.webview) {
-                        window.chrome.webview.postMessage(JSON.stringify({ type: 'scroll', ratio: ratio }));
+                        window.chrome.webview.postMessage(JSON.stringify({
+                            type: 'scroll',
+                            ratio: ratio,
+                            force: !!force
+                        }));
                     }
                 }
                 window.addEventListener('scroll', function () {
@@ -190,8 +194,12 @@ public static class MarkdownService
                     ticking = true;
                     requestAnimationFrame(function () {
                         ticking = false;
-                        postRatio();
+                        postRatio(false);
                     });
+                }, { passive: true });
+                // Re-assert position on click so the editor can catch up after view-mode changes.
+                window.addEventListener('click', function () {
+                    postRatio(true);
                 }, { passive: true });
             })();
         </script>

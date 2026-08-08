@@ -30,7 +30,6 @@ public partial class MainWindow : Window
     private ViewMode _viewMode = ViewMode.Split;
     private FindReplaceService? _findReplace;
     private FocusModeService? _focusMode;
-    private TypewriterModeService? _typewriterMode;
     private CodeBlockHighlightingTransformer? _codeBlockHighlighter;
     private readonly AppSettings _settings;
     private readonly DispatcherTimer _previewTimer;
@@ -89,7 +88,6 @@ public partial class MainWindow : Window
 
             _findReplace = new FindReplaceService(Editor);
             _focusMode = new FocusModeService(Editor);
-            _typewriterMode = new TypewriterModeService(Editor);
             _codeBlockHighlighter = new CodeBlockHighlightingTransformer();
             Editor.TextArea.TextView.LineTransformers.Add(_codeBlockHighlighter);
             AppLogger.Info("Editor services ready");
@@ -125,9 +123,7 @@ public partial class MainWindow : Window
             _folderPath = null;
             SetSidebarVisible(false);
             _focusMode.IsEnabled = _settings.IsFocusMode;
-            _typewriterMode.IsEnabled = _settings.IsTypewriterMode;
             ToolbarFocusButton.IsChecked = _settings.IsFocusMode;
-            ToolbarTypewriterButton.IsChecked = _settings.IsTypewriterMode;
             InitializeTabs();
             UpdateTitle();
             UpdateStats();
@@ -232,12 +228,14 @@ public partial class MainWindow : Window
             if (message.RootElement.GetProperty("type").GetString() != "scroll") return;
 
             var ratio = message.RootElement.GetProperty("ratio").GetDouble();
+            var force = message.RootElement.TryGetProperty("force", out var forceEl) &&
+                        forceEl.ValueKind is JsonValueKind.True;
             Dispatcher.Invoke(() =>
             {
                 // Ignore transient scroll=0 during tab switch / preview reload.
                 if (!_scrollSync.IsReloadSuppressing)
                     RememberActiveTabScroll(ratio);
-                _scrollSync.OnPreviewScrolled(ratio);
+                _scrollSync.OnPreviewScrolled(ratio, force);
             });
         }
         catch
@@ -253,7 +251,8 @@ public partial class MainWindow : Window
         if (_viewMode != ViewMode.Viewer && !_scrollSync.IsReloadSuppressing)
             RememberActiveTabScroll(GetEditorScrollRatio());
 
-        if (!_webViewReady || _viewMode == ViewMode.Viewer) return;
+        if (!_webViewReady) return;
+        // Keep the hidden preview aligned even in editor-only mode.
         _scrollSync.OnEditorScrolled();
     }
 
@@ -532,6 +531,8 @@ public partial class MainWindow : Window
 
     private void SetViewMode(ViewMode mode)
     {
+        var previousMode = _viewMode;
+        var ratio = CaptureCurrentScrollRatio();
         _viewMode = mode;
 
         ToolbarEditorButton.IsChecked = mode == ViewMode.Editor;
@@ -555,7 +556,8 @@ public partial class MainWindow : Window
                 EditorPanel.Visibility = Visibility.Visible;
                 PreviewPanel.Visibility = Visibility.Collapsed;
                 EditorPanel.Margin = new Thickness(10, 0, 10, 0);
-                _scrollSync.SetEnabled(false);
+                // Keep tracking enabled so the hidden preview stays aligned.
+                _scrollSync.SetEnabled(true);
                 break;
             case ViewMode.Viewer:
                 EditorColumn.Width = new GridLength(0);
@@ -565,7 +567,7 @@ public partial class MainWindow : Window
                 EditorPanel.Visibility = Visibility.Collapsed;
                 PreviewPanel.Visibility = Visibility.Visible;
                 PreviewPanel.Margin = new Thickness(10, 0, 0, 0);
-                _scrollSync.SetEnabled(false);
+                _scrollSync.SetEnabled(true);
                 break;
             case ViewMode.Split:
                 EditorColumn.Width = new GridLength(1, GridUnitType.Star);
@@ -579,6 +581,39 @@ public partial class MainWindow : Window
                 _scrollSync.SetEnabled(true);
                 break;
         }
+
+        // Collapsing/expanding panes can reset AvalonEdit scroll — restore after layout.
+        // When leaving preview, prefer a live WebView query over the cached ratio.
+        _ = RestoreScrollAfterViewModeChangeAsync(previousMode, mode, ratio);
+    }
+
+    private async Task RestoreScrollAfterViewModeChangeAsync(ViewMode previousMode, ViewMode mode, double fallbackRatio)
+    {
+        var ratio = fallbackRatio;
+
+        if (previousMode == ViewMode.Viewer || previousMode == ViewMode.Split)
+        {
+            var live = await _scrollSync.QueryPreviewScrollRatioAsync();
+            if (live is not null)
+                ratio = live.Value;
+        }
+        else if (previousMode == ViewMode.Editor)
+        {
+            ratio = GetEditorScrollRatio();
+        }
+
+        _scrollSync.RememberRatio(ratio);
+        RememberActiveTabScroll(ratio);
+
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+
+        if (_viewMode != mode) return;
+
+        if (mode is ViewMode.Editor or ViewMode.Split)
+            _scrollSync.ApplyRatioToEditor(ratio);
+
+        if (mode is ViewMode.Viewer or ViewMode.Split)
+            await _scrollSync.ApplyRatioToPreviewAsync(ratio);
     }
 
     private void ShowFind(bool focusReplace = false)
@@ -1216,16 +1251,6 @@ public partial class MainWindow : Window
         _settings.IsFocusMode = enabled;
         _settings.Save();
         StatusText.Text = enabled ? "Focus mode on" : "Focus mode off";
-    }
-
-    private void ToggleTypewriterMode_Click(object sender, RoutedEventArgs e)
-    {
-        var enabled = ToolbarTypewriterButton.IsChecked == true;
-        if (_typewriterMode is not null)
-            _typewriterMode.IsEnabled = enabled;
-        _settings.IsTypewriterMode = enabled;
-        _settings.Save();
-        StatusText.Text = enabled ? "Typewriter mode on" : "Typewriter mode off";
     }
 
     private void FormatDocument()

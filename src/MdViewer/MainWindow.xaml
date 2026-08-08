@@ -70,11 +70,6 @@
                                   Content="Focus"
                                   Click="ToggleFocusMode_Click"
                                   ToolTip="Focus mode — dim other paragraphs"/>
-                    <ToggleButton x:Name="ToolbarTypewriterButton"
-                                  Style="{StaticResource IconToggleButton}"
-                                  Content="Typewriter"
-                                  Click="ToggleTypewriterMode_Click"
-                                  ToolTip="Typewriter mode — keep caret centered"/>
                     <ToggleButton x:Name="ToolbarSidebarButton"
                                   Style="{StaticResource IconToggleButton}"
                                   Content="Files"

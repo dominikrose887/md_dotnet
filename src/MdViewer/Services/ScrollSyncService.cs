@@ -61,13 +61,54 @@ public sealed class ScrollSyncService
     public bool IsReloadSuppressing => _reloadSuppress;
 
     /// <summary>Last known synced scroll ratio (0–1), or -1 if unknown.</summary>
-    public double LastKnownRatio => _lastEditorRatio;
+    public double LastKnownRatio =>
+        _lastPreviewRatio >= 0 ? _lastPreviewRatio : _lastEditorRatio;
 
     public void RememberRatio(double ratio)
     {
         ratio = Clamp01(ratio);
         _lastEditorRatio = ratio;
         _lastPreviewRatio = ratio;
+    }
+
+    /// <summary>
+    /// Reads the live preview scroll ratio from WebView2. Returns null if unavailable.
+    /// </summary>
+    public async Task<double?> QueryPreviewScrollRatioAsync()
+    {
+        if (_webView?.CoreWebView2 is null) return null;
+
+        const string script = """
+            (function() {
+              var max = document.documentElement.scrollHeight - window.innerHeight;
+              return max > 0 ? window.scrollY / max : 0;
+            })()
+            """;
+
+        try
+        {
+            var raw = await _webView.ExecuteScriptAsync(script);
+            if (string.IsNullOrWhiteSpace(raw) || raw == "null") return null;
+            if (double.TryParse(raw.Trim('"'), NumberStyles.Float, CultureInfo.InvariantCulture, out var ratio))
+                return Clamp01(ratio);
+        }
+        catch
+        {
+            // WebView may be mid-navigation
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Applies a ratio to the editor immediately (even when live sync is disabled).
+    /// </summary>
+    public void ApplyRatioToEditor(double ratio)
+    {
+        ratio = Clamp01(ratio);
+        _lastEditorRatio = ratio;
+        _lastPreviewRatio = ratio;
+        _setEditorRatio?.Invoke(ratio);
     }
 
     /// <summary>
@@ -102,10 +143,13 @@ public sealed class ScrollSyncService
 
     public void OnEditorScrolled()
     {
-        if (!_enabled || _reloadSuppress || _activeSource == ScrollSource.Preview) return;
+        if (_reloadSuppress) return;
 
         var ratio = Clamp01(_getEditorRatio?.Invoke() ?? 0);
-        if (NearlyEqual(ratio, _lastEditorRatio)) return;
+        _lastEditorRatio = ratio;
+
+        if (!_enabled || _activeSource == ScrollSource.Preview) return;
+        if (NearlyEqual(ratio, _lastPreviewRatio)) return;
 
         _pendingEditorRatio = ratio;
         _activeSource = ScrollSource.Editor;
@@ -117,16 +161,19 @@ public sealed class ScrollSyncService
         BumpReleaseTimer();
     }
 
-    public void OnPreviewScrolled(double ratio)
+    public void OnPreviewScrolled(double ratio, bool force = false)
     {
-        if (!_enabled || _reloadSuppress || _activeSource == ScrollSource.Editor) return;
-
+        // Always remember preview position so single-pane modes stay aligned on switch.
         ratio = Clamp01(ratio);
-        if (NearlyEqual(ratio, _lastPreviewRatio) && NearlyEqual(ratio, _lastEditorRatio))
+        _lastPreviewRatio = ratio;
+
+        if (!_enabled || _reloadSuppress) return;
+        if (!force && _activeSource == ScrollSource.Editor) return;
+
+        if (!force && NearlyEqual(ratio, _lastEditorRatio))
             return;
 
         _activeSource = ScrollSource.Preview;
-        _lastPreviewRatio = ratio;
         _lastEditorRatio = ratio;
         _setEditorRatio?.Invoke(ratio);
         BumpReleaseTimer();

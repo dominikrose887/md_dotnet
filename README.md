@@ -68,7 +68,6 @@ Then run `publish\MdViewer.exe`, and use **Tools → Set as Default .md Viewer**
 ## Writing aids
 
 - **Focus mode** — dims paragraphs outside the current one
-- **Typewriter mode** — keeps the caret line vertically centered
 - **Regex find/replace** — toggle `.*` in the find bar
 - **Live stats** — words, characters, paragraphs, reading time
 - **Code fence highlighting** — language-aware coloring inside \`\`\` blocks

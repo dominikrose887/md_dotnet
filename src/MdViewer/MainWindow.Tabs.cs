@@ -124,6 +124,7 @@ public partial class MainWindow
         UpdateTitle();
         RefreshFileTree();
         RebuildCodeBlockHighlighting();
+        UpdateStats();
         StatusText.Text = tab.FilePath ?? "Untitled";
         _ = UpdatePreviewAsync(scrollRatio: restoreRatio);
     }
