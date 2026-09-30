@@ -2,6 +2,11 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.8] — 2026-09-30
+
+### Fixed
+- **Blank preview** — WebView2 `NavigateToString` loads via `data:text/html` URIs; link interception no longer cancels those navigations (regression in 1.1.7 that left Preview empty).
+
 ## [1.1.7] — 2026-09-30
 
 ### Fixed

@@ -228,11 +228,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        // NavigateToString uses about:blank. Any other source means we left the preview shell
-        // (e.g. raw .md / external page) and must not treat it as ready for incremental updates.
+        // NavigateToString uses a data:text/html URI (not about:blank on current WebView2).
         var source = PreviewWebView.CoreWebView2?.Source;
-        _previewShellReady = string.IsNullOrEmpty(source)
-                             || source.Equals("about:blank", StringComparison.OrdinalIgnoreCase);
+        _previewShellReady = IsPreviewDocumentNavigation(source);
 
         if (!_previewShellReady)
             return;
@@ -246,8 +244,8 @@ public partial class MainWindow : Window
     private void CoreWebView2_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
         var uri = e.Uri;
-        if (string.IsNullOrWhiteSpace(uri)
-            || uri.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
+        // Allow programmatic preview loads (NavigateToString → data:text/html / about:blank).
+        if (IsPreviewDocumentNavigation(uri))
             return;
 
         e.Cancel = true;
@@ -257,8 +255,27 @@ public partial class MainWindow : Window
     private void CoreWebView2_NewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
     {
         e.Handled = true;
-        if (!string.IsNullOrWhiteSpace(e.Uri))
+        if (!string.IsNullOrWhiteSpace(e.Uri) && !IsPreviewDocumentNavigation(e.Uri))
             Dispatcher.BeginInvoke(() => HandlePreviewNavigationUri(e.Uri));
+    }
+
+    /// <summary>
+    /// True for navigations that carry our preview HTML shell (NavigateToString),
+    /// which must never be cancelled by link interception.
+    /// </summary>
+    private static bool IsPreviewDocumentNavigation(string? uri)
+    {
+        if (string.IsNullOrWhiteSpace(uri))
+            return true;
+
+        if (uri.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // WebView2 NavigateToString navigates to data:text/html;charset=utf-8;base64,...
+        if (uri.StartsWith("data:text/html", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
     }
 
     private void HandlePreviewNavigationUri(string uriString)
