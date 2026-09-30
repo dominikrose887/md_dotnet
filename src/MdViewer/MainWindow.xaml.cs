@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private bool _webViewReady;
     private bool _previewShellReady;
     private string? _previewMappedRoot;
+    private string? _previewBaseHref;
     private bool _suppressTreeSelection;
     private const string PreviewVirtualHost = "mdviewer.assets";
     private bool _findBarOpen;
@@ -621,19 +622,25 @@ public partial class MainWindow : Window
         try
         {
             var dark = _settings.IsDarkTheme;
-            var previewRoot = ResolvePreviewRoot();
-            var baseHref = previewRoot is null ? null : $"https://{PreviewVirtualHost}/";
-            ApplyPreviewResourceMapping(previewRoot);
+            var plan = PreviewAssetService.Plan(
+                _currentFilePath,
+                _folderPath,
+                Editor.Text,
+                PreviewVirtualHost);
+            var previewRoot = plan.RootFolder;
+            var baseHref = plan.BaseHref;
 
-            if (!forceNavigate &&
-                !string.Equals(previewRoot, _previewMappedRoot, StringComparison.OrdinalIgnoreCase) &&
-                _previewShellReady)
+            if (!forceNavigate && _previewShellReady &&
+                (!string.Equals(previewRoot, _previewMappedRoot, StringComparison.OrdinalIgnoreCase)
+                 || !string.Equals(baseHref, _previewBaseHref, StringComparison.Ordinal)))
             {
-                // Document folder changed — reload shell so <base>/mapping stay in sync.
+                // Document folder / asset root changed — reload shell so <base>/mapping stay in sync.
                 forceNavigate = true;
             }
 
             _previewMappedRoot = previewRoot;
+            _previewBaseHref = baseHref;
+            ApplyPreviewResourceMapping(previewRoot);
             var bodyHtml = MarkdownService.ConvertToHtml(Editor.Text, dark);
             var restoreLine = scrollLine;
 
@@ -694,15 +701,34 @@ public partial class MainWindow : Window
 
     private string? ResolvePreviewRoot()
     {
-        if (!string.IsNullOrEmpty(_currentFilePath))
+        // Prefer the planned asset root (workspace / common ancestor) so ../ images resolve.
+        var plan = PreviewAssetService.Plan(
+            _currentFilePath,
+            _folderPath,
+            Editor.Text,
+            PreviewVirtualHost);
+        if (!string.IsNullOrEmpty(plan.RootFolder))
+            return plan.RootFolder;
+
+        return ResolveDocumentDirectory()
+               ?? (!string.IsNullOrEmpty(_folderPath) && Directory.Exists(_folderPath)
+                   ? Path.GetFullPath(_folderPath)
+                   : null);
+    }
+
+    private string? ResolveDocumentDirectory()
+    {
+        if (string.IsNullOrEmpty(_currentFilePath)) return null;
+        try
         {
-            var dir = Path.GetDirectoryName(_currentFilePath);
+            var dir = Path.GetDirectoryName(Path.GetFullPath(_currentFilePath));
             if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
                 return Path.GetFullPath(dir);
         }
-
-        if (!string.IsNullOrEmpty(_folderPath) && Directory.Exists(_folderPath))
-            return Path.GetFullPath(_folderPath);
+        catch
+        {
+            // Ignore invalid paths
+        }
 
         return null;
     }
@@ -729,7 +755,8 @@ public partial class MainWindow : Window
             rootFolder,
             CoreWebView2HostResourceAccessKind.Allow);
 
-        AppLogger.Debug($"Preview resource root mapped: {rootFolder} -> https://{PreviewVirtualHost}/");
+        AppLogger.Debug(
+            $"Preview resource root mapped: {rootFolder} -> https://{PreviewVirtualHost}/ (base={_previewBaseHref ?? "(none)"})");
     }
 
     private void UpdateTitle()
@@ -1428,7 +1455,7 @@ public partial class MainWindow : Window
         {
             var title = Path.GetFileNameWithoutExtension(dialog.FileName);
             var html = MarkdownService.ToExportHtml(Editor.Text, title, _settings.IsDarkTheme);
-            html = ExportImageService.EmbedLocalImages(html, ResolvePreviewRoot());
+            html = ExportImageService.EmbedLocalImages(html, ResolveDocumentDirectory());
             await File.WriteAllTextAsync(dialog.FileName, html, Encoding.UTF8);
             StatusText.Text = $"Exported: {dialog.FileName}";
         }
@@ -1460,11 +1487,14 @@ public partial class MainWindow : Window
         try
         {
             var title = Path.GetFileNameWithoutExtension(dialog.FileName);
-            var previewRoot = ResolvePreviewRoot();
-            var baseHref = previewRoot is null ? null : $"https://{PreviewVirtualHost}/";
-            ApplyPreviewResourceMapping(previewRoot);
+            var plan = PreviewAssetService.Plan(
+                _currentFilePath,
+                _folderPath,
+                Editor.Text,
+                PreviewVirtualHost);
+            ApplyPreviewResourceMapping(plan.RootFolder);
 
-            var html = MarkdownService.ToExportHtml(Editor.Text, title, darkTheme: false, baseHref: baseHref);
+            var html = MarkdownService.ToExportHtml(Editor.Text, title, darkTheme: false, baseHref: plan.BaseHref);
             _previewShellReady = false;
             _scrollSync.BeginReload();
 

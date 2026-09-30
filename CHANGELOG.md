@@ -2,6 +2,11 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.9] — 2026-09-30
+
+### Fixed
+- **Relative images with `../`** — preview virtual-host mapping now uses the workspace (or the common ancestor of the document and local assets) and sets `<base href>` to the document folder, so paths like `../.attachments/img.png` load correctly.
+
 ## [1.1.8] — 2026-09-30
 
 ### Fixed
