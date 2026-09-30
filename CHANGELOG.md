@@ -2,6 +2,15 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.7] — 2026-09-30
+
+### Fixed
+- **External links** — http(s) links in the preview open in the system browser instead of navigating the in-app WebView (which previously trapped you on a page you could not leave).
+- **Markdown cross-links** — relative `.md` links open as document tabs with proper rendered preview (no more raw markdown text). Use **Back** / **Alt+Left** to return to the previous document.
+- **Sidebar layout gap** — closing the Files sidebar no longer leaves an empty strip on the left; editor/preview-only modes no longer reserve phantom column space.
+- **Heading / anchor jumps** — in-document `#` links are more reliable (instant scroll, sync suppress, slug fallback).
+- **Split view sync** — preview↔editor scroll and click-to-navigate are more stable (longer ownership window, ignore link clicks, editor click jumps preview, preview click moves caret).
+
 ## [1.1.6] — 2026-08-08
 
 ### Fixed

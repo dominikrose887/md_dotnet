@@ -116,30 +116,60 @@ public static class MarkdownService
                         if (window.__mdAnchorsBound) return;
                         window.__mdAnchorsBound = true;
                         document.addEventListener('click', function (e) {
-                            var a = e.target.closest('a');
+                            var a = e.target.closest ? e.target.closest('a') : null;
                             if (!a) return;
                             var href = a.getAttribute('href');
-                            if (href && href.charAt(0) === '#') {
+                            if (!href) return;
+                            if (href.charAt(0) === '#') {
                                 e.preventDefault();
+                                e.stopPropagation();
                                 scrollToHash(href);
                             }
                         }, true);
                     }
 
-                    function scrollToHash(hash) {
-                        if (!hash || hash === '#') return;
-                        var id = decodeURIComponent(hash.replace(/^#/, ''));
-                        if (!id) return;
+                    function findHeadingByHash(id) {
+                        if (!id) return null;
                         var el = document.getElementById(id) || document.getElementById(id.toLowerCase());
-                        if (!el) {
-                            var headings = document.querySelectorAll('h1,h2,h3,h4,h5,h6');
-                            for (var i = 0; i < headings.length; i++) {
-                                var h = headings[i];
-                                if ((h.id || '') === id || slugify(h.textContent || '') === id) { el = h; break; }
-                            }
+                        if (el) return el;
+                        var headings = document.querySelectorAll('#md-content h1,#md-content h2,#md-content h3,#md-content h4,#md-content h5,#md-content h6');
+                        for (var i = 0; i < headings.length; i++) {
+                            var h = headings[i];
+                            var hid = h.id || '';
+                            if (hid === id || hid.toLowerCase() === id.toLowerCase()) return h;
+                            if (slugify(h.textContent || '') === id || slugify(h.textContent || '') === id.toLowerCase()) return h;
                         }
-                        if (!el) return;
-                        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        return null;
+                    }
+
+                    function scrollToHash(hash) {
+                        if (!hash || hash === '#') return false;
+                        var id;
+                        try { id = decodeURIComponent(hash.replace(/^#/, '')); }
+                        catch (ex) { id = hash.replace(/^#/, ''); }
+                        if (!id) return false;
+                        var el = findHeadingByHash(id);
+                        if (!el) return false;
+
+                        window.__mdSyncSuppress = true;
+                        try {
+                            var top = Math.max(0, el.getBoundingClientRect().top + window.scrollY - 8);
+                            window.scrollTo({ top: top, left: 0, behavior: 'instant' });
+                        } finally {
+                            setTimeout(function () { window.__mdSyncSuppress = false; }, 280);
+                        }
+
+                        var lineEl = el.closest ? el.closest('.code-line[data-line]') : null;
+                        if (!lineEl && el.getAttribute) lineEl = el.getAttribute('data-line') != null ? el : null;
+                        var line = lineEl ? parseInt(lineEl.getAttribute('data-line'), 10) : NaN;
+                        if (!isNaN(line) && window.chrome && window.chrome.webview) {
+                            window.chrome.webview.postMessage(JSON.stringify({
+                                type: 'scroll',
+                                line: line,
+                                force: true
+                            }));
+                        }
+                        return true;
                     }
 
                     function slugify(text) {
@@ -148,6 +178,7 @@ public static class MarkdownService
                             .replace(/\s+/g, '-');
                     }
 
+                    window.__mdScrollToHash = scrollToHash;
                     window.__mdRender = function () {
                         renderMath();
                         renderMermaid();
@@ -226,7 +257,7 @@ public static class MarkdownService
                         var top = Math.max(0, documentTop(target.element));
                         window.scrollTo({ top: top, left: 0, behavior: 'instant' });
                     } finally {
-                        setTimeout(function () { window.__mdSyncSuppress = false; }, 140);
+                        setTimeout(function () { window.__mdSyncSuppress = false; }, 260);
                     }
                 }
 
@@ -257,6 +288,9 @@ public static class MarkdownService
                 }, { passive: true });
 
                 window.addEventListener('click', function (e) {
+                    // Link clicks are handled by host navigation / anchor script — don't steal them.
+                    if (e.target && e.target.closest && e.target.closest('a')) return;
+
                     var el = e.target && e.target.closest ? e.target.closest('.code-line[data-line]') : null;
                     if (el) {
                         var line = parseInt(el.getAttribute('data-line'), 10);

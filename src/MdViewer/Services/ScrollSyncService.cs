@@ -29,14 +29,16 @@ public sealed class ScrollSyncService
     private WebView2? _webView;
     private Func<int>? _getEditorLine;
     private Action<int>? _setEditorLine;
+    private Action<int>? _moveEditorCaret;
     private bool _enabled = true;
 
     public ScrollSyncService()
     {
-        _editorFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(32) };
+        _editorFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
         _editorFlushTimer.Tick += EditorFlushTimer_Tick;
 
-        _releaseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        // Longer ownership window reduces editor↔preview feedback loops.
+        _releaseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(420) };
         _releaseTimer.Tick += (_, _) =>
         {
             _releaseTimer.Stop();
@@ -47,11 +49,13 @@ public sealed class ScrollSyncService
     public void Attach(
         WebView2 webView,
         Func<int> getEditorLine,
-        Action<int> setEditorLine)
+        Action<int> setEditorLine,
+        Action<int>? moveEditorCaret = null)
     {
         _webView = webView;
         _getEditorLine = getEditorLine;
         _setEditorLine = setEditorLine;
+        _moveEditorCaret = moveEditorCaret;
     }
 
     public void SetEnabled(bool enabled) => _enabled = enabled;
@@ -132,7 +136,7 @@ public sealed class ScrollSyncService
 
         await ApplyLineToPreviewAsync(line);
 
-        await Task.Delay(160);
+        await Task.Delay(200);
         _reloadSuppress = false;
         _reloadRestoreLine = -1;
     }
@@ -157,6 +161,27 @@ public sealed class ScrollSyncService
         BumpReleaseTimer();
     }
 
+    /// <summary>
+    /// Jump preview to the caret line after an editor click (does not require scroll change).
+    /// </summary>
+    public void OnEditorCaretMoved(int line)
+    {
+        if (_reloadSuppress || !_enabled) return;
+        if (_activeSource == ScrollSource.Preview) return;
+
+        line = Math.Max(0, line);
+        _lastEditorLine = line;
+        if (line == _lastPreviewLine) return;
+
+        _activeSource = ScrollSource.Editor;
+        _lastPreviewLine = line;
+        _pendingEditorLine = line;
+        _editorFlushQueued = false;
+        _editorFlushTimer.Stop();
+        _ = ApplyLineToPreviewAsync(line);
+        BumpReleaseTimer();
+    }
+
     public void OnPreviewScrolled(int line, bool force = false)
     {
         line = Math.Max(0, line);
@@ -169,6 +194,8 @@ public sealed class ScrollSyncService
         _activeSource = ScrollSource.Preview;
         _lastEditorLine = line;
         _setEditorLine?.Invoke(line);
+        if (force)
+            _moveEditorCaret?.Invoke(line);
         BumpReleaseTimer();
     }
 

@@ -16,6 +16,7 @@ public static class KeyboardShortcutsCatalog
             new("Ctrl+S", "Save"),
             new("Ctrl+Shift+S", "Save as"),
             new("Ctrl+W", "Close active tab"),
+            new("Alt+Left", "Go back (preview link history)"),
         ]),
         new("Edit",
         [

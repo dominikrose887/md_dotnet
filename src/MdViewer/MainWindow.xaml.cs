@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Diagnostics;
+using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
@@ -36,6 +37,9 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _findTimer;
     private readonly DispatcherTimer _statsTimer;
     private readonly ScrollSyncService _scrollSync = new();
+    private readonly Stack<string> _previewNavHistory = new();
+    private string? _pendingPreviewFragment;
+    private bool _navigatingFromHistory;
 
     public MainWindow()
     {
@@ -80,11 +84,17 @@ public partial class MainWindow : Window
             Loaded += MainWindow_Loaded;
             Closed += MainWindow_Closed;
             Editor.TextArea.TextView.ScrollOffsetChanged += Editor_ScrollOffsetChanged;
+            Editor.TextArea.PreviewMouseLeftButtonUp += Editor_PreviewMouseLeftButtonUp;
 
             _scrollSync.Attach(
                 PreviewWebView,
                 getEditorLine: GetEditorVisibleLine,
-                setEditorLine: SetEditorVisibleLine);
+                setEditorLine: SetEditorVisibleLine,
+                moveEditorCaret: MoveEditorCaretToLine);
+
+            var navigateBackCommand = new RoutedUICommand("Navigate Back", "NavigateBack", typeof(MainWindow));
+            CommandBindings.Add(new CommandBinding(navigateBackCommand, (_, _) => NavigateBack()));
+            InputBindings.Add(new KeyBinding(navigateBackCommand, Key.Left, ModifierKeys.Alt));
 
             _findReplace = new FindReplaceService(Editor);
             _focusMode = new FocusModeService(Editor);
@@ -187,6 +197,8 @@ public partial class MainWindow : Window
             PreviewWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             PreviewWebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             PreviewWebView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
+            PreviewWebView.CoreWebView2.NavigationStarting += CoreWebView2_NavigationStarting;
+            PreviewWebView.CoreWebView2.NewWindowRequested += CoreWebView2_NewWindowRequested;
             PreviewWebView.CoreWebView2.ProcessFailed += (_, args) =>
                 AppLogger.Error($"WebView2 process failed: {args.ProcessFailedKind}");
             PreviewWebView.NavigationCompleted += PreviewWebView_NavigationCompleted;
@@ -216,8 +228,227 @@ public partial class MainWindow : Window
             return;
         }
 
-        _previewShellReady = true;
-        await _scrollSync.RestorePreviewScrollAsync();
+        // NavigateToString uses about:blank. Any other source means we left the preview shell
+        // (e.g. raw .md / external page) and must not treat it as ready for incremental updates.
+        var source = PreviewWebView.CoreWebView2?.Source;
+        _previewShellReady = string.IsNullOrEmpty(source)
+                             || source.Equals("about:blank", StringComparison.OrdinalIgnoreCase);
+
+        if (!_previewShellReady)
+            return;
+
+        if (!string.IsNullOrEmpty(_pendingPreviewFragment))
+            await ApplyPendingFragmentAsync();
+        else
+            await _scrollSync.RestorePreviewScrollAsync();
+    }
+
+    private void CoreWebView2_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        var uri = e.Uri;
+        if (string.IsNullOrWhiteSpace(uri)
+            || uri.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        e.Cancel = true;
+        Dispatcher.BeginInvoke(() => HandlePreviewNavigationUri(uri));
+    }
+
+    private void CoreWebView2_NewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
+    {
+        e.Handled = true;
+        if (!string.IsNullOrWhiteSpace(e.Uri))
+            Dispatcher.BeginInvoke(() => HandlePreviewNavigationUri(e.Uri));
+    }
+
+    private void HandlePreviewNavigationUri(string uriString)
+    {
+        try
+        {
+            if (!Uri.TryCreate(uriString, UriKind.Absolute, out var uri))
+            {
+                AppLogger.Warn($"Preview navigation ignored (invalid URI): {uriString}");
+                return;
+            }
+
+            if (uri.Scheme is "http" or "https")
+            {
+                if (uri.Host.Equals(PreviewVirtualHost, StringComparison.OrdinalIgnoreCase))
+                {
+                    HandleVirtualHostNavigation(uri);
+                    return;
+                }
+
+                OpenExternalUri(uri.AbsoluteUri);
+                return;
+            }
+
+            if (uri.Scheme.Equals("file", StringComparison.OrdinalIgnoreCase))
+            {
+                HandleLocalPathNavigation(uri.LocalPath, uri.Fragment);
+                return;
+            }
+
+            if (uri.Scheme.Equals("mailto", StringComparison.OrdinalIgnoreCase))
+            {
+                OpenExternalUri(uri.AbsoluteUri);
+                return;
+            }
+
+            AppLogger.Debug($"Preview navigation ignored: {uriString}");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"HandlePreviewNavigationUri failed: {uriString}", ex);
+        }
+    }
+
+    private void HandleVirtualHostNavigation(Uri uri)
+    {
+        var relative = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
+        var fragment = string.IsNullOrEmpty(uri.Fragment) ? null : uri.Fragment;
+        var root = ResolvePreviewRoot();
+        if (string.IsNullOrEmpty(root))
+        {
+            StatusText.Text = "Cannot resolve link (no document folder)";
+            return;
+        }
+
+        var combined = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
+        HandleLocalPathNavigation(combined, fragment);
+    }
+
+    private void HandleLocalPathNavigation(string path, string? fragment)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        if (IsMarkdownPath(path) && File.Exists(path))
+        {
+            NavigateToMarkdownFromPreview(path, fragment);
+            return;
+        }
+
+        if (File.Exists(path))
+        {
+            OpenExternalUri(path);
+            return;
+        }
+
+        StatusText.Text = $"Link target not found: {Path.GetFileName(path)}";
+        AppLogger.Warn($"Preview link target missing: {path}");
+    }
+
+    private void NavigateToMarkdownFromPreview(string path, string? fragment)
+    {
+        var full = Path.GetFullPath(path);
+        var normalizedFragment = NormalizeFragment(fragment);
+
+        // Same document + heading: jump in place without tab churn.
+        if (string.Equals(_currentFilePath, full, StringComparison.OrdinalIgnoreCase))
+        {
+            _pendingPreviewFragment = normalizedFragment;
+            if (!string.IsNullOrEmpty(_pendingPreviewFragment))
+                _ = ApplyPendingFragmentAsync();
+            return;
+        }
+
+        if (!_navigatingFromHistory
+            && !string.IsNullOrEmpty(_currentFilePath))
+        {
+            _previewNavHistory.Push(_currentFilePath);
+            UpdateBackButton();
+        }
+
+        _pendingPreviewFragment = normalizedFragment;
+        OpenOrFocusFile(full, preferPreviewIfNonEmpty: true);
+        StatusText.Text = $"Opened: {full}";
+    }
+
+    private static string? NormalizeFragment(string? fragment)
+    {
+        if (string.IsNullOrWhiteSpace(fragment)) return null;
+        return fragment.StartsWith('#') ? fragment : "#" + fragment;
+    }
+
+    private void NavigateBack()
+    {
+        if (_previewNavHistory.Count == 0) return;
+
+        var previous = _previewNavHistory.Pop();
+        UpdateBackButton();
+
+        if (!File.Exists(previous))
+        {
+            StatusText.Text = "Previous document no longer exists";
+            return;
+        }
+
+        _navigatingFromHistory = true;
+        try
+        {
+            _pendingPreviewFragment = null;
+            OpenOrFocusFile(previous, preferPreviewIfNonEmpty: true);
+            StatusText.Text = $"Back: {previous}";
+        }
+        finally
+        {
+            _navigatingFromHistory = false;
+        }
+    }
+
+    private void UpdateBackButton()
+    {
+        if (ToolbarBackButton is not null)
+            ToolbarBackButton.IsEnabled = _previewNavHistory.Count > 0;
+    }
+
+    private void NavigateBack_Click(object sender, RoutedEventArgs e) => NavigateBack();
+
+    private static void OpenExternalUri(string uri)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = uri,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error($"Failed to open external URI: {uri}", ex);
+            MessageBox.Show(
+                $"Could not open link:\n{uri}\n\n{ex.Message}",
+                "Open link",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task ApplyPendingFragmentAsync()
+    {
+        var hash = _pendingPreviewFragment;
+        _pendingPreviewFragment = null;
+        if (string.IsNullOrEmpty(hash) || PreviewWebView.CoreWebView2 is null)
+            return;
+
+        var payload = JsonSerializer.Serialize(hash);
+        var script = $$"""
+            (function(){
+              if (window.__mdScrollToHash) window.__mdScrollToHash({{payload}});
+            })();
+            """;
+
+        try
+        {
+            // Allow layout/mermaid/math a moment after shell load.
+            await Task.Delay(60);
+            await PreviewWebView.ExecuteScriptAsync(script);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn($"ApplyPendingFragmentAsync failed: {ex.Message}");
+        }
     }
 
     private void CoreWebView2_WebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -256,6 +487,17 @@ public partial class MainWindow : Window
         _scrollSync.OnEditorScrolled();
     }
 
+    private void Editor_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_suppressTabEditorSync || !_webViewReady) return;
+        if (_viewMode == ViewMode.Editor) return;
+        if (_scrollSync.IsReloadSuppressing) return;
+
+        var line = Math.Max(0, Editor.TextArea.Caret.Line - 1);
+        RememberActiveTabScroll(line);
+        _scrollSync.OnEditorCaretMoved(line);
+    }
+
     /// <summary>First visible editor line, 0-based (matches Markdig / data-line).</summary>
     private int GetEditorVisibleLine()
     {
@@ -285,6 +527,23 @@ public partial class MainWindow : Window
         catch
         {
             Editor.ScrollTo(Math.Clamp(zeroBasedLine + 1, 1, Math.Max(1, Editor.Document.LineCount)), 0);
+        }
+    }
+
+    private void MoveEditorCaretToLine(int zeroBasedLine)
+    {
+        try
+        {
+            if (Editor.Document.LineCount <= 0) return;
+            var lineNumber = Math.Clamp(zeroBasedLine + 1, 1, Editor.Document.LineCount);
+            var docLine = Editor.Document.GetLineByNumber(lineNumber);
+            Editor.CaretOffset = docLine.Offset;
+            if (_viewMode != ViewMode.Viewer)
+                Editor.Focus();
+        }
+        catch
+        {
+            // Ignore caret move failures during document swaps
         }
     }
 
@@ -397,6 +656,9 @@ public partial class MainWindow : Window
 
                     if (_scrollSync.IsReloadSuppressing)
                         await _scrollSync.EndReloadAsync();
+
+                    if (!string.IsNullOrEmpty(_pendingPreviewFragment))
+                        await ApplyPendingFragmentAsync();
 
                     return;
                 }
@@ -534,14 +796,19 @@ public partial class MainWindow : Window
 
         if (visible)
         {
+            SidebarColumn.MinWidth = 160;
             SidebarColumn.Width = new GridLength(240);
+            SidebarSplitterColumn.MinWidth = 0;
             SidebarSplitterColumn.Width = new GridLength(6);
             SidebarPanel.Visibility = Visibility.Visible;
             SidebarSplitter.Visibility = Visibility.Visible;
         }
         else
         {
+            // Clear MinWidth so Width=0 actually collapses (WPF MinWidth otherwise reserves space).
+            SidebarColumn.MinWidth = 0;
             SidebarColumn.Width = new GridLength(0);
+            SidebarSplitterColumn.MinWidth = 0;
             SidebarSplitterColumn.Width = new GridLength(0);
             SidebarPanel.Visibility = Visibility.Collapsed;
             SidebarSplitter.Visibility = Visibility.Collapsed;
@@ -568,8 +835,11 @@ public partial class MainWindow : Window
         switch (mode)
         {
             case ViewMode.Editor:
+                EditorColumn.MinWidth = 200;
                 EditorColumn.Width = new GridLength(1, GridUnitType.Star);
+                SplitterColumn.MinWidth = 0;
                 SplitterColumn.Width = new GridLength(0);
+                PreviewColumn.MinWidth = 0;
                 PreviewColumn.Width = new GridLength(0);
                 ViewSplitter.Visibility = Visibility.Collapsed;
                 EditorPanel.Visibility = Visibility.Visible;
@@ -578,8 +848,11 @@ public partial class MainWindow : Window
                 _scrollSync.SetEnabled(true);
                 break;
             case ViewMode.Viewer:
+                EditorColumn.MinWidth = 0;
                 EditorColumn.Width = new GridLength(0);
+                SplitterColumn.MinWidth = 0;
                 SplitterColumn.Width = new GridLength(0);
+                PreviewColumn.MinWidth = 200;
                 PreviewColumn.Width = new GridLength(1, GridUnitType.Star);
                 ViewSplitter.Visibility = Visibility.Collapsed;
                 EditorPanel.Visibility = Visibility.Collapsed;
@@ -588,8 +861,11 @@ public partial class MainWindow : Window
                 _scrollSync.SetEnabled(true);
                 break;
             case ViewMode.Split:
+                EditorColumn.MinWidth = 200;
                 EditorColumn.Width = new GridLength(1, GridUnitType.Star);
+                SplitterColumn.MinWidth = 0;
                 SplitterColumn.Width = new GridLength(6);
+                PreviewColumn.MinWidth = 200;
                 PreviewColumn.Width = new GridLength(1, GridUnitType.Star);
                 ViewSplitter.Visibility = Visibility.Visible;
                 EditorPanel.Visibility = Visibility.Visible;
