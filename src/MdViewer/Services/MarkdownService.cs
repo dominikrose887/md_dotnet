@@ -6,7 +6,7 @@ namespace MdViewer.Services;
 public static class MarkdownService
 {
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
-        .UseAdvancedExtensions()
+        .UseAdvancedExtensions() // includes Mathematics ($...$ / $$...$$)
         .UseAutoIdentifiers(AutoIdentifierOptions.GitHub)
         .UseYamlFrontMatter()
         .Use(new SourceLineMapExtension())
@@ -77,15 +77,41 @@ public static class MarkdownService
                         base.href = href;
                     };
 
-                    function renderMath() {
-                        if (!window.katex) return;
+                    function unwrapMathSource(tex) {
+                        tex = (tex || '').replace(/^\s+|\s+$/g, '');
+                        // Markdig Mathematics emits \(...\) / \[...\] inside .math nodes.
+                        // KaTeX.render() expects the TeX body without delimiters.
+                        var patterns = [
+                            /^\\\(([\s\S]*)\\\)$/,
+                            /^\\\[([\s\S]*)\\\]$/,
+                            /^\$\$([\s\S]*)\$\$$/,
+                            /^\$([\s\S]*)\$$/
+                        ];
+                        for (var i = 0; i < patterns.length; i++) {
+                            var m = tex.match(patterns[i]);
+                            if (m) return m[1].replace(/^\s+|\s+$/g, '');
+                        }
+                        return tex;
+                    }
+
+                    function renderMath(attempt) {
+                        if (!window.katex) {
+                            if ((attempt || 0) < 50)
+                                setTimeout(function () { renderMath((attempt || 0) + 1); }, 40);
+                            return;
+                        }
                         document.querySelectorAll('#md-content span.math, #md-content div.math').forEach(function (el) {
                             if (el.getAttribute('data-rendered') === '1') return;
-                            var tex = el.textContent || '';
+                            var tex = unwrapMathSource(el.textContent || '');
+                            if (!tex) return;
+                            var displayMode = el.tagName.toLowerCase() === 'div'
+                                || /^\\\[/.test((el.textContent || '').trim())
+                                || /^\$\$/.test((el.textContent || '').trim());
                             try {
                                 katex.render(tex, el, {
                                     throwOnError: false,
-                                    displayMode: el.tagName.toLowerCase() === 'div'
+                                    displayMode: displayMode,
+                                    strict: 'ignore'
                                 });
                                 el.setAttribute('data-rendered', '1');
                             } catch (e) { }

@@ -2,6 +2,11 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.10] — 2026-10-12
+
+### Fixed
+- **LaTeX / KaTeX preview** — Markdig emits `\(...\)` / `\[...\]` inside `.math` nodes; KaTeX now strips those delimiters before rendering, and retries briefly if the CDN script is still loading.
+
 ## [1.1.9] — 2026-09-30
 
 ### Fixed
