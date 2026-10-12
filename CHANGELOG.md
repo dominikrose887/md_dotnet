@@ -2,6 +2,11 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.11] — 2026-10-12
+
+### Fixed
+- **LaTeX `\(...\)` / `\[...\]` delimiters** — many academic notes use these instead of `$...$`. Markdig previously stripped them and GenericAttributes ate `{...}` (e.g. `\mathbb{Z}` → broken `Z_{91}`). Preview now normalizes them to `$`/`$$` before parsing (code blocks untouched).
+
 ## [1.1.10] — 2026-10-12
 
 ### Fixed

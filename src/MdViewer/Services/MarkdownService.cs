@@ -14,7 +14,9 @@ public static class MarkdownService
 
     public static string ConvertToHtml(string markdown, bool darkTheme = false)
     {
-        var html = Markdown.ToHtml(markdown, Pipeline);
+        // Markdig only parses $...$ / $$...$$; convert \(...\) / \[...\] first.
+        var normalized = LatexDelimiterNormalizer.Normalize(markdown);
+        var html = Markdown.ToHtml(normalized, Pipeline);
         return PreviewCodeEnhancer.Enhance(html, darkTheme);
     }
 
