@@ -2,6 +2,11 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.12] — 2026-10-12
+
+### Added
+- **Copy on code blocks** — preview `pre` blocks show a top-right **Copy** button that puts the full code on the clipboard.
+
 ## [1.1.11] — 2026-10-12
 
 ### Fixed

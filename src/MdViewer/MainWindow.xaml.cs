@@ -474,7 +474,30 @@ public partial class MainWindow : Window
         try
         {
             using var message = JsonDocument.Parse(e.TryGetWebMessageAsString());
-            if (message.RootElement.GetProperty("type").GetString() != "scroll") return;
+            var type = message.RootElement.GetProperty("type").GetString();
+
+            if (type == "copy")
+            {
+                var text = message.RootElement.TryGetProperty("text", out var textEl)
+                    ? textEl.GetString() ?? string.Empty
+                    : string.Empty;
+                Dispatcher.Invoke(() =>
+                {
+                    try
+                    {
+                        Clipboard.SetText(text);
+                        StatusText.Text = "Code copied";
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Warn($"Clipboard copy failed: {ex.Message}");
+                        StatusText.Text = "Could not copy code";
+                    }
+                });
+                return;
+            }
+
+            if (type != "scroll") return;
 
             var line = message.RootElement.TryGetProperty("line", out var lineEl)
                 ? lineEl.GetInt32()

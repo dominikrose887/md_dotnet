@@ -28,7 +28,7 @@ $Iss = Join-Path $Root "installer\MdViewer.iss"
 if (-not $Version) {
     [xml]$csproj = Get-Content $Project
     $Version = @($csproj.Project.PropertyGroup.Version | Where-Object { $_ }) | Select-Object -First 1
-    if (-not $Version) { $Version = "1.1.11" }
+    if (-not $Version) { $Version = "1.1.12" }
 }
 
 $FourPart = if ($Version -match '^\d+\.\d+\.\d+$') { "$Version.0" } else { $Version }

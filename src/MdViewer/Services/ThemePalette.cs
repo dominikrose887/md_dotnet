@@ -167,6 +167,45 @@ public static class ThemePalette
                         font-variant-ligatures: none;
                     }
                     pre code span { font-family: inherit; }
+                    .code-block {
+                        position: relative;
+                        margin: 1.2em 0;
+                    }
+                    .code-block > pre {
+                        margin: 0;
+                    }
+                    .code-copy {
+                        position: absolute;
+                        top: 8px;
+                        right: 8px;
+                        z-index: 2;
+                        appearance: none;
+                        border: 1px solid var(--md-border);
+                        background: var(--md-bg);
+                        color: var(--md-heading);
+                        font: 600 11px/1 "Segoe UI", system-ui, sans-serif;
+                        letter-spacing: 0.02em;
+                        padding: 6px 10px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        opacity: 0.72;
+                        transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+                    }
+                    .code-block:hover .code-copy,
+                    .code-copy:focus-visible {
+                        opacity: 1;
+                    }
+                    .code-copy:hover {
+                        background: var(--md-code-bg);
+                    }
+                    .code-copy.is-copied {
+                        opacity: 1;
+                        color: var(--md-link);
+                        border-color: var(--md-link);
+                    }
+                    .code-block > pre > code {
+                        padding-right: 72px !important;
+                    }
                     blockquote { border-left: 3px solid var(--md-quote-border); margin: 1.2em 0; padding: 0.2em 0 0.2em 16px; color: var(--md-quote); }
                     table { border-collapse: collapse; width: 100%; margin: 1.2em 0; }
                     th, td { border: 1px solid var(--md-border); padding: 10px 12px; text-align: left; }

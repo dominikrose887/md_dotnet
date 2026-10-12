@@ -206,10 +206,90 @@ public static class MarkdownService
                             .replace(/\s+/g, '-');
                     }
 
+                    function enhanceCodeBlocks() {
+                        document.querySelectorAll('#md-content pre > code').forEach(function (code) {
+                            var pre = code.parentElement;
+                            if (!pre || pre.parentElement && pre.parentElement.classList.contains('code-block'))
+                                return;
+                            if ((code.className || '').indexOf('language-mermaid') >= 0)
+                                return;
+
+                            var wrap = document.createElement('div');
+                            wrap.className = 'code-block';
+                            pre.parentNode.insertBefore(wrap, pre);
+
+                            var btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.className = 'code-copy';
+                            btn.textContent = 'Copy';
+                            btn.title = 'Copy code';
+                            btn.addEventListener('click', function (e) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                copyCodeBlock(code, btn);
+                            });
+
+                            wrap.appendChild(btn);
+                            wrap.appendChild(pre);
+                        });
+                    }
+
+                    function copyCodeBlock(codeEl, btn) {
+                        var text = codeEl.textContent || '';
+                        // Prefer host clipboard — WebView2 data: documents are often not a secure context.
+                        if (window.chrome && window.chrome.webview) {
+                            window.chrome.webview.postMessage(JSON.stringify({
+                                type: 'copy',
+                                text: text
+                            }));
+                            markCopied(btn);
+                            return;
+                        }
+
+                        var done = function () { markCopied(btn); };
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(text).then(done).catch(function () {
+                                fallbackCopy(text) ? done() : null;
+                            });
+                            return;
+                        }
+
+                        if (fallbackCopy(text)) done();
+                    }
+
+                    function fallbackCopy(text) {
+                        try {
+                            var ta = document.createElement('textarea');
+                            ta.value = text;
+                            ta.setAttribute('readonly', '');
+                            ta.style.position = 'fixed';
+                            ta.style.left = '-9999px';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            var ok = document.execCommand('copy');
+                            document.body.removeChild(ta);
+                            return ok;
+                        } catch (e) {
+                            return false;
+                        }
+                    }
+
+                    function markCopied(btn) {
+                        if (!btn) return;
+                        btn.classList.add('is-copied');
+                        btn.textContent = 'Copied';
+                        clearTimeout(btn.__mdCopyTimer);
+                        btn.__mdCopyTimer = setTimeout(function () {
+                            btn.classList.remove('is-copied');
+                            btn.textContent = 'Copy';
+                        }, 1600);
+                    }
+
                     window.__mdScrollToHash = scrollToHash;
                     window.__mdRender = function () {
                         renderMath();
                         renderMermaid();
+                        enhanceCodeBlocks();
                     };
 
                     enableAnchorNavigation();
