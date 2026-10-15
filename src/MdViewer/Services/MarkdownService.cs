@@ -310,7 +310,10 @@ public static class MarkdownService
         WrapInDocument(ConvertToHtml(markdown, darkTheme), title, darkTheme, baseHref);
 
     public static string ToPreviewHtml(string markdown, bool darkTheme = false, string? baseHref = null) =>
-        WrapInDocument(ConvertToHtml(markdown, darkTheme), darkTheme: darkTheme, baseHref: baseHref) + ScrollSyncScript;
+        ToPreviewHtmlFromBody(ConvertToHtml(markdown, darkTheme), darkTheme, baseHref);
+
+    public static string ToPreviewHtmlFromBody(string bodyHtml, bool darkTheme = false, string? baseHref = null) =>
+        WrapInDocument(bodyHtml, darkTheme: darkTheme, baseHref: baseHref) + ScrollSyncScript;
 
     private const string ScrollSyncScript = """
         <script>

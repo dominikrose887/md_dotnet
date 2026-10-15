@@ -2,6 +2,18 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.13] — 2026-10-15
+
+### Fixed
+- **Scroll sync races** — reload suppress is generation-guarded so a stale EndReload cannot unlock a newer tab switch; failed / not-ready preview updates cancel suppress instead of leaving sync stuck.
+- **Overlapping preview updates** — last-writer-wins version gate prevents older async updates from overwriting newer tab/theme content.
+- **PDF export cleanup** — navigation handler always unsubscribed; preview shell always restored after export (including Editor-only); export navigations no longer mark the shell ready.
+- **Mapped asset root** — root/base href are committed only after a successful preview update.
+- **Shutdown** — timers and WebView/scroll-sync handlers are stopped on close.
+
+### Improved
+- **Typing performance** — editor code-block highlighting is debounced with stats; ColorCode formatters are reused.
+
 ## [1.1.12] — 2026-10-12
 
 ### Added

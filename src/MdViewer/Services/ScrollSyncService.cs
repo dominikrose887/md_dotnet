@@ -8,7 +8,7 @@ namespace MdViewer.Services;
 /// Keeps AvalonEdit and WebView2 aligned by markdown source line (0-based),
 /// matching the VS Code preview approach — not by scroll-height ratio.
 /// </summary>
-public sealed class ScrollSyncService
+public sealed class ScrollSyncService : IDisposable
 {
     private enum ScrollSource
     {
@@ -26,11 +26,13 @@ public sealed class ScrollSyncService
     private bool _editorFlushQueued;
     private bool _reloadSuppress;
     private int _reloadRestoreLine = -1;
+    private int _reloadGeneration;
     private WebView2? _webView;
     private Func<int>? _getEditorLine;
     private Action<int>? _setEditorLine;
     private Action<int>? _moveEditorCaret;
     private bool _enabled = true;
+    private bool _disposed;
 
     public ScrollSyncService()
     {
@@ -39,11 +41,13 @@ public sealed class ScrollSyncService
 
         // Longer ownership window reduces editor↔preview feedback loops.
         _releaseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(420) };
-        _releaseTimer.Tick += (_, _) =>
-        {
-            _releaseTimer.Stop();
-            _activeSource = ScrollSource.None;
-        };
+        _releaseTimer.Tick += ReleaseTimer_Tick;
+    }
+
+    private void ReleaseTimer_Tick(object? sender, EventArgs e)
+    {
+        _releaseTimer.Stop();
+        _activeSource = ScrollSource.None;
     }
 
     public void Attach(
@@ -79,7 +83,7 @@ public sealed class ScrollSyncService
     /// </summary>
     public async Task<int?> QueryPreviewLineAsync()
     {
-        if (_webView?.CoreWebView2 is null) return null;
+        if (_disposed || _webView?.CoreWebView2 is null) return null;
 
         const string script = """
             (function() {
@@ -118,6 +122,7 @@ public sealed class ScrollSyncService
     /// </summary>
     public void BeginReload(int? restoreLine = null)
     {
+        _reloadGeneration++;
         _reloadSuppress = true;
         _reloadRestoreLine = restoreLine ?? (_lastEditorLine >= 0
             ? _lastEditorLine
@@ -128,8 +133,22 @@ public sealed class ScrollSyncService
         _editorFlushTimer.Stop();
     }
 
+    /// <summary>
+    /// Clears reload suppress immediately (e.g. WebView not ready / update failed).
+    /// Does not apply scroll — use when the reload path never completed.
+    /// </summary>
+    public void CancelReload()
+    {
+        _reloadGeneration++;
+        _reloadSuppress = false;
+        _reloadRestoreLine = -1;
+        _editorFlushQueued = false;
+        _editorFlushTimer.Stop();
+    }
+
     public async Task EndReloadAsync()
     {
+        var generation = _reloadGeneration;
         var line = _reloadRestoreLine >= 0
             ? _reloadRestoreLine
             : Math.Max(0, _getEditorLine?.Invoke() ?? 0);
@@ -137,13 +156,18 @@ public sealed class ScrollSyncService
         await ApplyLineToPreviewAsync(line);
 
         await Task.Delay(200);
+
+        // A newer BeginReload/CancelReload started — do not unlock suppress for the old one.
+        if (generation != _reloadGeneration)
+            return;
+
         _reloadSuppress = false;
         _reloadRestoreLine = -1;
     }
 
     public void OnEditorScrolled()
     {
-        if (_reloadSuppress) return;
+        if (_disposed || _reloadSuppress) return;
 
         var line = Math.Max(0, _getEditorLine?.Invoke() ?? 0);
         _lastEditorLine = line;
@@ -166,7 +190,7 @@ public sealed class ScrollSyncService
     /// </summary>
     public void OnEditorCaretMoved(int line)
     {
-        if (_reloadSuppress || !_enabled) return;
+        if (_disposed || _reloadSuppress || !_enabled) return;
         if (_activeSource == ScrollSource.Preview) return;
 
         line = Math.Max(0, line);
@@ -187,7 +211,7 @@ public sealed class ScrollSyncService
         line = Math.Max(0, line);
         _lastPreviewLine = line;
 
-        if (!_enabled || _reloadSuppress) return;
+        if (!_enabled || _reloadSuppress || _disposed) return;
         if (!force && _activeSource == ScrollSource.Editor) return;
         if (!force && line == _lastEditorLine) return;
 
@@ -201,7 +225,7 @@ public sealed class ScrollSyncService
 
     public async Task ApplyLineToPreviewAsync(int line)
     {
-        if (_webView?.CoreWebView2 is null) return;
+        if (_disposed || _webView?.CoreWebView2 is null) return;
 
         line = Math.Max(0, line);
         _lastEditorLine = line;
@@ -220,7 +244,7 @@ public sealed class ScrollSyncService
         }
         catch
         {
-            // WebView may be mid-navigation
+            // WebView may be mid-navigation / disposed
         }
     }
 
@@ -240,7 +264,7 @@ public sealed class ScrollSyncService
 
     private async void EditorFlushTimer_Tick(object? sender, EventArgs e)
     {
-        if (!_editorFlushQueued || _reloadSuppress)
+        if (_disposed || !_editorFlushQueued || _reloadSuppress)
         {
             _editorFlushTimer.Stop();
             return;
@@ -261,5 +285,22 @@ public sealed class ScrollSyncService
     {
         _releaseTimer.Stop();
         _releaseTimer.Start();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        _editorFlushTimer.Stop();
+        _editorFlushTimer.Tick -= EditorFlushTimer_Tick;
+        _releaseTimer.Stop();
+        _releaseTimer.Tick -= ReleaseTimer_Tick;
+
+        _webView = null;
+        _getEditorLine = null;
+        _setEditorLine = null;
+        _moveEditorCaret = null;
+        _reloadSuppress = false;
     }
 }

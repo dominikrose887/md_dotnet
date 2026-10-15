@@ -210,8 +210,7 @@ public static class PreviewCodeEnhancer
 
     public static string Enhance(string html, bool darkTheme)
     {
-        var style = darkTheme ? PastelDark : PastelLight;
-        var formatter = new HtmlFormatter(style);
+        var formatter = darkTheme ? FormatterDark : FormatterLight;
 
         return CodeBlockRegex.Replace(html, match =>
         {
@@ -270,6 +269,8 @@ public static class PreviewCodeEnhancer
 
     private static readonly StyleDictionary PastelLight = CreatePastel(dark: false);
     private static readonly StyleDictionary PastelDark = CreatePastel(dark: true);
+    private static readonly HtmlFormatter FormatterLight = new(PastelLight);
+    private static readonly HtmlFormatter FormatterDark = new(PastelDark);
 
     private static StyleDictionary CreatePastel(bool dark)
     {

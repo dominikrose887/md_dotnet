@@ -41,6 +41,10 @@ public partial class MainWindow : Window
     private readonly Stack<string> _previewNavHistory = new();
     private string? _pendingPreviewFragment;
     private bool _navigatingFromHistory;
+    private int _previewUpdateVersion;
+    private bool _pdfExportInProgress;
+    private bool _isClosing;
+    private bool _shutdownDone;
 
     public MainWindow()
     {
@@ -80,6 +84,7 @@ public partial class MainWindow : Window
             {
                 _statsTimer.Stop();
                 UpdateStats();
+                RebuildCodeBlockHighlighting();
             };
 
             Loaded += MainWindow_Loaded;
@@ -154,6 +159,36 @@ public partial class MainWindow : Window
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
         AppLogger.Info("MainWindow closed");
+        ShutdownPreviewServices();
+    }
+
+    private void ShutdownPreviewServices()
+    {
+        if (_shutdownDone) return;
+        _shutdownDone = true;
+        _isClosing = true;
+        _previewUpdateVersion++;
+        _previewTimer.Stop();
+        _findTimer.Stop();
+        _statsTimer.Stop();
+
+        try
+        {
+            if (PreviewWebView.CoreWebView2 is not null)
+            {
+                PreviewWebView.CoreWebView2.WebMessageReceived -= CoreWebView2_WebMessageReceived;
+                PreviewWebView.CoreWebView2.NavigationStarting -= CoreWebView2_NavigationStarting;
+                PreviewWebView.CoreWebView2.NewWindowRequested -= CoreWebView2_NewWindowRequested;
+            }
+
+            PreviewWebView.NavigationCompleted -= PreviewWebView_NavigationCompleted;
+        }
+        catch
+        {
+            // WebView may already be torn down
+        }
+
+        _scrollSync.Dispose();
     }
 
     public void OpenFileFromPath(string path)
@@ -223,6 +258,9 @@ public partial class MainWindow : Window
 
     private async void PreviewWebView_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
+        if (_isClosing || _pdfExportInProgress)
+            return;
+
         if (!e.IsSuccess)
         {
             _previewShellReady = false;
@@ -609,7 +647,6 @@ public partial class MainWindow : Window
         _previewTimer.Start();
         _statsTimer.Stop();
         _statsTimer.Start();
-        RebuildCodeBlockHighlighting();
         _focusMode?.Refresh();
 
         if (_findBarOpen && !string.IsNullOrEmpty(FindTextBox.Text))
@@ -640,7 +677,16 @@ public partial class MainWindow : Window
 
     private async Task UpdatePreviewAsync(bool forceNavigate = false, int? scrollLine = null)
     {
-        if (!_webViewReady) return;
+        if (_isClosing) return;
+
+        if (!_webViewReady)
+        {
+            if (_scrollSync.IsReloadSuppressing)
+                _scrollSync.CancelReload();
+            return;
+        }
+
+        var updateVersion = ++_previewUpdateVersion;
 
         try
         {
@@ -661,11 +707,12 @@ public partial class MainWindow : Window
                 forceNavigate = true;
             }
 
-            _previewMappedRoot = previewRoot;
-            _previewBaseHref = baseHref;
             ApplyPreviewResourceMapping(previewRoot);
             var bodyHtml = MarkdownService.ConvertToHtml(Editor.Text, dark);
             var restoreLine = scrollLine;
+
+            if (updateVersion != _previewUpdateVersion)
+                return;
 
             if (!forceNavigate && _previewShellReady && PreviewWebView.CoreWebView2 is not null)
             {
@@ -696,13 +743,22 @@ public partial class MainWindow : Window
                     """;
 
                 var result = await PreviewWebView.ExecuteScriptAsync(script);
+                if (updateVersion != _previewUpdateVersion)
+                    return;
+
                 if (result.Contains("ok", StringComparison.Ordinal))
                 {
+                    _previewMappedRoot = previewRoot;
+                    _previewBaseHref = baseHref;
+
                     if (restoreLine.HasValue)
                         _scrollSync.RememberLine(restoreLine.Value);
 
                     if (_scrollSync.IsReloadSuppressing)
                         await _scrollSync.EndReloadAsync();
+
+                    if (updateVersion != _previewUpdateVersion)
+                        return;
 
                     if (!string.IsNullOrEmpty(_pendingPreviewFragment))
                         await ApplyPendingFragmentAsync();
@@ -713,12 +769,20 @@ public partial class MainWindow : Window
                 _previewShellReady = false;
             }
 
+            if (updateVersion != _previewUpdateVersion)
+                return;
+
+            _previewMappedRoot = previewRoot;
+            _previewBaseHref = baseHref;
             _scrollSync.BeginReload(restoreLine);
-            PreviewWebView.NavigateToString(MarkdownService.ToPreviewHtml(Editor.Text, dark, baseHref));
+            PreviewWebView.NavigateToString(
+                MarkdownService.ToPreviewHtmlFromBody(bodyHtml, dark, baseHref));
         }
         catch (Exception ex)
         {
             AppLogger.Error("UpdatePreviewAsync failed", ex);
+            if (_scrollSync.IsReloadSuppressing)
+                _scrollSync.CancelReload();
         }
     }
 
@@ -1507,6 +1571,8 @@ public partial class MainWindow : Window
 
         if (dialog.ShowDialog() != true) return;
 
+        EventHandler<CoreWebView2NavigationCompletedEventArgs>? onNavigated = null;
+        _pdfExportInProgress = true;
         try
         {
             var title = Path.GetFileNameWithoutExtension(dialog.FileName);
@@ -1522,13 +1588,14 @@ public partial class MainWindow : Window
             _scrollSync.BeginReload();
 
             var navigationDone = new TaskCompletionSource<bool>();
-            void OnNavigated(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+            onNavigated = (_, e) =>
             {
-                PreviewWebView.NavigationCompleted -= OnNavigated;
+                if (onNavigated is not null)
+                    PreviewWebView.NavigationCompleted -= onNavigated;
                 navigationDone.TrySetResult(e.IsSuccess);
-            }
+            };
 
-            PreviewWebView.NavigationCompleted += OnNavigated;
+            PreviewWebView.NavigationCompleted += onNavigated;
             PreviewWebView.NavigateToString(html);
 
             var ok = await navigationDone.Task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -1536,17 +1603,26 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException("Preview navigation failed while preparing PDF.");
 
             await WaitForPreviewImagesAsync();
-            await PreviewWebView.CoreWebView2.PrintToPdfAsync(dialog.FileName);
+            await PreviewWebView.CoreWebView2!.PrintToPdfAsync(dialog.FileName);
             StatusText.Text = $"Exported: {dialog.FileName}";
-
-            if (_viewMode != ViewMode.Editor)
-                await UpdatePreviewAsync(forceNavigate: true);
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Could not export PDF:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            if (_viewMode != ViewMode.Editor)
-                _ = UpdatePreviewAsync(forceNavigate: true);
+        }
+        finally
+        {
+            if (onNavigated is not null)
+            {
+                try { PreviewWebView.NavigationCompleted -= onNavigated; }
+                catch { /* ignore */ }
+            }
+
+            _pdfExportInProgress = false;
+            _previewShellReady = false;
+            // Always restore the live preview shell (also after Editor-only export).
+            if (!_isClosing && _webViewReady)
+                await UpdatePreviewAsync(forceNavigate: true);
         }
     }
 
@@ -1845,6 +1921,7 @@ public partial class MainWindow : Window
         }
 
         _settings.Save();
+        ShutdownPreviewServices();
         AppLogger.Info("Window closing confirmed");
     }
 }
