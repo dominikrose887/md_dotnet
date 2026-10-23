@@ -44,6 +44,7 @@ Then run `publish\MdViewer.exe`, and use **Tools → Set as Default .md Viewer**
 - **Syntax highlighting** — light/dark markdown highlighting
 - **Dark / light theme** — UI, editor, and preview
 - **Scroll sync** — editor ↔ preview
+- **Interactive task lists** — check/uncheck `- [ ]` / `- [x]` items in preview; updates the markdown source
 - **CLI open** — pass a `.md` file or folder path
 - **File association** — register/unregister as default `.md` opener (per user, no admin)
 

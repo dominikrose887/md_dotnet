@@ -285,14 +285,42 @@ public static class MarkdownService
                         }, 1600);
                     }
 
+                    function enableTaskListCheckboxes() {
+                        if (window.__mdTaskListsBound) return;
+                        window.__mdTaskListsBound = true;
+                        document.addEventListener('change', function (e) {
+                            var t = e.target;
+                            if (!t || t.type !== 'checkbox') return;
+                            var lineEl = t.closest ? t.closest('[data-line]') : null;
+                            var line = lineEl ? parseInt(lineEl.getAttribute('data-line'), 10) : NaN;
+                            if (isNaN(line)) return;
+                            if (window.chrome && window.chrome.webview) {
+                                window.chrome.webview.postMessage(JSON.stringify({
+                                    type: 'checkbox',
+                                    line: line,
+                                    checked: !!t.checked
+                                }));
+                            }
+                        }, true);
+                    }
+
+                    function unlockTaskListCheckboxes() {
+                        document.querySelectorAll('#md-content input[type="checkbox"]').forEach(function (cb) {
+                            cb.disabled = false;
+                            cb.removeAttribute('disabled');
+                        });
+                    }
+
                     window.__mdScrollToHash = scrollToHash;
                     window.__mdRender = function () {
                         renderMath();
                         renderMermaid();
                         enhanceCodeBlocks();
+                        unlockTaskListCheckboxes();
                     };
 
                     enableAnchorNavigation();
+                    enableTaskListCheckboxes();
                     window.__mdRender();
                     if (location.hash) setTimeout(function () { scrollToHash(location.hash); }, 50);
                 })();

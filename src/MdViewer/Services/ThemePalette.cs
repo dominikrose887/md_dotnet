@@ -215,6 +215,11 @@ public static class ThemePalette
                     hr { border: none; border-top: 1px solid var(--md-border); margin: 2em 0; }
                     ul, ol { padding-left: 1.4em; }
                     li + li { margin-top: 0.25em; }
+                    #md-content input[type="checkbox"] {
+                        cursor: pointer;
+                        margin-right: 0.4em;
+                        vertical-align: middle;
+                    }
                     .math { font-size: 1.05em; }
                     div.math { margin: 1.2em 0; overflow-x: auto; }
                     .mermaid { margin: 1.2em 0; text-align: center; }

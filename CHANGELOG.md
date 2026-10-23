@@ -2,6 +2,11 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.14] — 2026-10-23
+
+### Added
+- **Interactive task lists in preview** — click checkboxes in Viewer/Split preview to toggle raw markers (`[ ]` ↔ `[x]`); the editor source updates (undo-friendly) and the document is marked dirty.
+
 ## [1.1.13] — 2026-10-15
 
 ### Fixed

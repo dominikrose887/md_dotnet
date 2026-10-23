@@ -535,6 +535,17 @@ public partial class MainWindow : Window
                 return;
             }
 
+            if (type == "checkbox")
+            {
+                var checkboxLine = message.RootElement.TryGetProperty("line", out var checkboxLineEl)
+                    ? checkboxLineEl.GetInt32()
+                    : -1;
+                var isChecked = message.RootElement.TryGetProperty("checked", out var checkedEl) &&
+                                checkedEl.ValueKind is JsonValueKind.True;
+                Dispatcher.Invoke(() => ApplyPreviewCheckboxToggle(checkboxLine, isChecked));
+                return;
+            }
+
             if (type != "scroll") return;
 
             var line = message.RootElement.TryGetProperty("line", out var lineEl)
@@ -552,6 +563,26 @@ public partial class MainWindow : Window
         catch
         {
             // Ignore malformed scroll messages
+        }
+    }
+
+    private void ApplyPreviewCheckboxToggle(int zeroBasedLine, bool isChecked)
+    {
+        if (!TaskListToggleService.TryGetToggle(Editor.Text, zeroBasedLine, isChecked, out var offset, out var newChar))
+        {
+            // Source couldn't be matched — refresh preview so the checkbox reverts.
+            _ = UpdatePreviewAsync();
+            return;
+        }
+
+        try
+        {
+            Editor.Document.Replace(offset, 1, newChar.ToString());
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn($"Preview checkbox toggle failed: {ex.Message}");
+            _ = UpdatePreviewAsync();
         }
     }
 
