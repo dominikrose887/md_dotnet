@@ -2,6 +2,15 @@
 
 All notable changes to MdViewer are documented in this file.
 
+## [1.1.15] — 2026-10-23
+
+### Added
+- **Smart auto-reload** — each open file is watched on disk. A clean tab reloads quietly when the file changes; unsaved edits get a bar to **Reload** or **Keep**. Rapid or partial writes settle before the editor updates, and the caret stays with the unchanged text.
+- **Deleted files** — if the file disappears, the open copy is kept. Closing the tab asks whether to save it back.
+
+### Improved
+- **Windows line endings** — opening a CRLF file no longer looks unsaved just because the editor stores LF.
+
 ## [1.1.14] — 2026-10-23
 
 ### Added

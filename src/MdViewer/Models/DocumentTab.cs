@@ -120,6 +120,23 @@ public sealed class DocumentTab : INotifyPropertyChanged
         SavedContent = Content;
     }
 
+    /// <summary>
+    /// Replace the buffer with a disk version and clear the dirty flag in one step,
+    /// so the tab title does not flash a dirty marker in between.
+    /// </summary>
+    public void AdoptDiskContent(string content)
+    {
+        var changed = !string.Equals(_content, content, StringComparison.Ordinal)
+                      || !string.Equals(_savedContent, content, StringComparison.Ordinal);
+        _content = content;
+        _savedContent = content;
+        if (!changed) return;
+        OnPropertyChanged(nameof(Content));
+        OnPropertyChanged(nameof(SavedContent));
+        OnPropertyChanged(nameof(IsDirty));
+        OnPropertyChanged(nameof(DisplayTitle));
+    }
+
     public void NotifyTitleChanged()
     {
         OnPropertyChanged(nameof(Title));

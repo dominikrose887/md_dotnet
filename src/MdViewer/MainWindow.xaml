@@ -137,6 +137,36 @@
             </ScrollViewer>
         </Border>
 
+        <!-- External file change: silent reload when clean, this bar when dirty. -->
+        <Border x:Name="ExternalChangeBar"
+                DockPanel.Dock="Top"
+                Visibility="Collapsed"
+                Background="{DynamicResource FindHighlightBrush}"
+                BorderBrush="{DynamicResource BorderBrushKey}"
+                BorderThickness="0,0,0,1"
+                Padding="14,8">
+            <DockPanel LastChildFill="True">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="ExternalChangeReloadButton"
+                            Style="{StaticResource ToolbarPrimaryButton}"
+                            Content="Reload"
+                            Click="ExternalChangeReload_Click"
+                            ToolTip="Replace the editor with the file on disk. Unsaved edits in this tab will be lost."/>
+                    <Button x:Name="ExternalChangeKeepButton"
+                            Style="{StaticResource ToolbarIconButton}"
+                            Content="Keep"
+                            Margin="4,0,0,0"
+                            Click="ExternalChangeKeep_Click"
+                            ToolTip="Keep the version open in the editor"/>
+                </StackPanel>
+                <TextBlock x:Name="ExternalChangeText"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Center"
+                           Margin="0,0,16,0"
+                           Foreground="{DynamicResource AppForegroundBrush}"/>
+            </DockPanel>
+        </Border>
+
         <Border DockPanel.Dock="Bottom"
                 Background="{DynamicResource StatusBarBackgroundBrush}"
                 BorderBrush="{DynamicResource BorderBrushKey}"

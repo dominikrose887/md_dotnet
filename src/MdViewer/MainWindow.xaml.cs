@@ -141,6 +141,7 @@ public partial class MainWindow : Window
             _focusMode.IsEnabled = _settings.IsFocusMode;
             ToolbarFocusButton.IsChecked = _settings.IsFocusMode;
             InitializeTabs();
+            InitializeExternalFileWatch();
             UpdateTitle();
             UpdateStats();
             SetViewMode(ViewMode.Split);
@@ -171,6 +172,7 @@ public partial class MainWindow : Window
         _previewTimer.Stop();
         _findTimer.Stop();
         _statsTimer.Stop();
+        DisposeExternalFileWatch();
 
         try
         {
@@ -1379,7 +1381,8 @@ public partial class MainWindow : Window
     private bool ConfirmDiscardChanges()
     {
         PersistActiveTabFromEditor();
-        if (!(_activeTab?.IsDirty ?? _isDirty)) return true;
+        var keepBuffer = _activeTab is null ? _isDirty : _activeTab.IsDirty || HasExternalDiskHold(_activeTab);
+        if (!keepBuffer) return true;
 
         var result = MessageBox.Show(
             "You have unsaved changes. Do you want to save before continuing?",
@@ -1517,6 +1520,7 @@ public partial class MainWindow : Window
             UpdateTitle();
             StatusText.Text = $"Saved: {_currentFilePath}";
             RefreshFileTree();
+            NoteExternalFileWritten(_currentFilePath);
             return true;
         }
         catch (Exception ex)

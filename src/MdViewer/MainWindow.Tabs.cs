@@ -125,6 +125,7 @@ public partial class MainWindow
         RebuildCodeBlockHighlighting();
         UpdateStats();
         StatusText.Text = tab.FilePath ?? "Untitled";
+        UpdateExternalChangeBar();
         _ = UpdatePreviewAsync(scrollLine: restoreLine);
     }
 
@@ -140,6 +141,9 @@ public partial class MainWindow
         if (existing is not null)
         {
             ActivateTab(existing, updateEditor: true);
+            SyncExternalWatches();
+            SeedDiskBaseline(existing);
+            PollExternalFileChanges();
             if (preferPreviewIfNonEmpty && !string.IsNullOrWhiteSpace(existing.Content))
                 SetViewMode(ViewMode.Viewer);
             return;
@@ -147,7 +151,7 @@ public partial class MainWindow
 
         try
         {
-            var content = File.ReadAllText(full, Encoding.UTF8);
+            var content = ExternalReloadPolicy.Normalize(File.ReadAllText(full, Encoding.UTF8));
             var tab = CreateTabFromFile(full, content);
 
             // Replace a single pristine untitled tab.
@@ -166,6 +170,9 @@ public partial class MainWindow
             _settings.AddRecentFile(full);
             _settings.Save();
             ActivateTab(tab, updateEditor: true);
+            SyncExternalWatches();
+            SeedDiskBaseline(tab);
+            PollExternalFileChanges();
 
             if (preferPreviewIfNonEmpty && !string.IsNullOrWhiteSpace(content))
                 SetViewMode(ViewMode.Viewer);
@@ -191,12 +198,12 @@ public partial class MainWindow
 
     private bool CloseTab(DocumentTab tab)
     {
-        if (tab.IsDirty || (tab == _activeTab && Editor.Text != tab.SavedContent && !_suppressTabEditorSync))
+        if (tab.IsDirty || HasExternalDiskHold(tab) || (tab == _activeTab && Editor.Text != tab.SavedContent && !_suppressTabEditorSync))
         {
             if (tab == _activeTab)
                 PersistActiveTabFromEditor();
 
-            if (tab.IsDirty)
+            if (tab.IsDirty || HasExternalDiskHold(tab))
             {
                 var result = MessageBox.Show(
                     $"Save changes to {tab.Title}?",
@@ -212,7 +219,7 @@ public partial class MainWindow
 
                     if (!SaveFile()) return false;
                     PersistActiveTabFromEditor();
-                    if (tab.IsDirty) return false;
+                    if (tab.IsDirty || HasExternalDiskHold(tab)) return false;
                 }
             }
         }
@@ -222,6 +229,8 @@ public partial class MainWindow
 
         var wasActive = tab == _activeTab;
         Tabs.RemoveAt(index);
+        ForgetExternalTab(tab);
+        SyncExternalWatches();
 
         if (Tabs.Count == 0)
         {
@@ -256,7 +265,7 @@ public partial class MainWindow
         PersistActiveTabFromEditor();
         foreach (var tab in Tabs.ToList())
         {
-            if (!tab.IsDirty) continue;
+            if (!tab.IsDirty && !HasExternalDiskHold(tab)) continue;
 
             ActivateTab(tab, updateEditor: true);
             if (!ConfirmDiscardChanges())

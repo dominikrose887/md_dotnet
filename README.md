@@ -27,6 +27,12 @@ dotnet publish src/MdViewer -c Release -r win-x64 --self-contained false -o publ
 
 Then run `publish\MdViewer.exe`, and use **Tools → Set as Default .md Viewer**.
 
+Run the tests:
+
+```bash
+dotnet test
+```
+
 ## Requirements
 
 - .NET 8 SDK
@@ -45,6 +51,7 @@ Then run `publish\MdViewer.exe`, and use **Tools → Set as Default .md Viewer**
 - **Dark / light theme** — UI, editor, and preview
 - **Scroll sync** — editor ↔ preview
 - **Interactive task lists** — check/uncheck `- [ ]` / `- [x]` items in preview; updates the markdown source
+- **External changes** — a clean file reloads when it changes on disk; unsaved work asks before replacing the editor
 - **CLI open** — pass a `.md` file or folder path
 - **File association** — register/unregister as default `.md` opener (per user, no admin)
 
@@ -65,6 +72,17 @@ Then run `publish\MdViewer.exe`, and use **Tools → Set as Default .md Viewer**
 | Heading 1–3 | Ctrl+1 / Ctrl+2 / Ctrl+3 |
 | Find next / prev | Enter / Shift+Enter |
 | Close find | Esc |
+
+## External changes
+
+MdViewer watches every open file.
+
+- A tab you have not edited reloads the editor and preview when the file changes on disk. The view stays where you were reading. A caret at the end of the file follows text appended there.
+- Unsaved edits raise a bar: **Reload** takes the copy on disk, **Keep** stays on yours. The same disk revision is not asked about again until the file changes again.
+- Saving writes your version and clears the bar. If you save while the bar is open, the status line reads that your version was saved.
+- If the file is deleted, the bar lets you keep the open copy. Closing the tab asks whether to save it back.
+- A burst of writes (another editor, a sync tool, or a script) is applied once, after the file settles. A brief truncate-and-rewrite does not flash an empty document.
+- A file that is no longer plain text is not loaded on its own; the bar asks first.
 
 ## Writing aids
 
